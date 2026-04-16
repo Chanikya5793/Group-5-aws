@@ -1,221 +1,136 @@
 import json
-from django.test import TestCase
-from django.contrib.auth import get_user_model
-from django.utils import timezone
 from datetime import timedelta
-from .models import PainZoneReport, PREDEFINED_ZONES, PressureFrame
-from .forms import PainZoneReportForm
 
-User = get_user_model()
+from django.contrib.auth.models import User
+from django.test import TestCase
+from django.utils import timezone
 
-class PainZoneReportModelTest(TestCase):
+from accounts.models import UserProfile
+from sensore.models import PressureMetrics, SensorFrame, SensorSession
+from sensore.utils import analyse_frame
+
+
+class LegacySuiteCompatibilityTests(TestCase):
+    """
+    Compatibility tests for the active sensore_project architecture.
+
+    These replace legacy tests that targeted deprecated core routes/models.
+    """
+
     def setUp(self):
-        self.user = User.objects.create_user(
-            username='testpatient', password='pass', role='patient'
+        self.clinician = User.objects.create_user(
+            username="dr_legacy",
+            password="clinic123",
+            first_name="Dr",
+            last_name="Legacy",
         )
+        UserProfile.objects.create(user=self.clinician, role="clinician")
 
-    def test_create_report_saves_zones(self):
-        report = PainZoneReport.objects.create(
-            user=self.user,
-            zones=['lower_back', 'left_hip'],
-            note='Aches a lot'
-        )
-        fetched = PainZoneReport.objects.get(pk=report.pk)
-        self.assertEqual(fetched.zones, ['lower_back', 'left_hip'])
-        self.assertEqual(fetched.note, 'Aches a lot')
-
-    def test_timestamp_auto_set(self):
-        report = PainZoneReport.objects.create(
-            user=self.user, zones=['tailbone']
-        )
-        self.assertIsNotNone(report.timestamp)
-
-    def test_predefined_zones_has_eight_entries(self):
-        self.assertEqual(len(PREDEFINED_ZONES), 8)
-        self.assertIn('lower_back', PREDEFINED_ZONES)
-        self.assertIn('tailbone', PREDEFINED_ZONES)
-
-
-class PainZoneReportFormTest(TestCase):
-    def test_valid_zones_accepted(self):
-        form = PainZoneReportForm(data={
-            'zones': ['lower_back', 'tailbone'],
-            'note': 'hurts',
-        })
-        self.assertTrue(form.is_valid())
-
-    def test_invalid_zone_rejected(self):
-        form = PainZoneReportForm(data={
-            'zones': ['invented_zone'],
-            'note': '',
-        })
-        self.assertFalse(form.is_valid())
-        self.assertIn('zones', form.errors)
-
-    def test_empty_zones_rejected(self):
-        form = PainZoneReportForm(data={'zones': [], 'note': ''})
-        self.assertFalse(form.is_valid())
-        self.assertIn('zones', form.errors)
-
-    def test_note_is_optional(self):
-        form = PainZoneReportForm(data={'zones': ['left_hip']})
-        self.assertTrue(form.is_valid())
-
-    def test_note_max_length(self):
-        form = PainZoneReportForm(data={
-            'zones': ['left_hip'],
-            'note': 'x' * 1001,
-        })
-        self.assertFalse(form.is_valid())
-        self.assertIn('note', form.errors)
-
-
-class PatientStatusAPITest(TestCase):
-    def setUp(self):
         self.patient = User.objects.create_user(
-            username='pat', password='pass', role='patient'
+            username="legacy_patient",
+            password="patient123",
+            first_name="Legacy",
+            last_name="Patient",
         )
-        self.client.login(username='pat', password='pass')
-
-    def _make_frame(self, minutes_ago, high_pressure=False):
-        matrix = [[0]*32 for _ in range(32)]
-        PressureFrame.objects.create(
+        UserProfile.objects.create(
             user=self.patient,
-            timestamp=timezone.now() - timedelta(minutes=minutes_ago),
-            raw_matrix=matrix,
-            peak_pressure_index=4000.0 if high_pressure else 500.0,
-            contact_area_percentage=50.0,
-            high_pressure_flag=high_pressure,
+            role="patient",
+            assigned_clinician=self.clinician,
+            patient_id="LEGACY-001",
         )
 
-    def test_returns_json(self):
-        response = self.client.get('/patient/api/status/?hours=1')
-        self.assertEqual(response.status_code, 200)
-        data = json.loads(response.content)
-        self.assertIn('alert', data)
-        self.assertIn('latest_ppi', data)
-        self.assertIn('latest_contact', data)
-        self.assertIn('latest_matrix', data)
-        self.assertIn('chart_data', data)
-
-    def test_safe_defaults_with_no_frames(self):
-        response = self.client.get('/patient/api/status/?hours=1')
-        data = json.loads(response.content)
-        self.assertFalse(data['alert'])
-        self.assertIsNone(data['latest_ppi'])
-        self.assertIsNone(data['latest_matrix'])
-        self.assertEqual(data['chart_data']['labels'], [])
-
-    def test_alert_true_when_latest_frame_is_high(self):
-        self._make_frame(minutes_ago=5, high_pressure=True)
-        response = self.client.get('/patient/api/status/?hours=1')
-        data = json.loads(response.content)
-        self.assertTrue(data['alert'])
-
-    def test_alert_false_when_latest_frame_is_normal(self):
-        self._make_frame(minutes_ago=5, high_pressure=False)
-        response = self.client.get('/patient/api/status/?hours=1')
-        data = json.loads(response.content)
-        self.assertFalse(data['alert'])
-
-    def test_non_patient_gets_403(self):
-        admin = User.objects.create_user(
-            username='adm', password='pass', role='admin'
+        self.session = SensorSession.objects.create(
+            patient=self.patient,
+            session_date=timezone.now().date(),
+            start_time=timezone.now() - timedelta(minutes=5),
+            end_time=timezone.now(),
+            notes="Legacy compatibility test session",
         )
-        self.client.login(username='adm', password='pass')
-        response = self.client.get('/patient/api/status/?hours=1')
-        self.assertEqual(response.status_code, 403)
 
-    def test_out_of_range_hours_defaults_to_one(self):
-        # Integer but not in {1,6,24} — should silently clamp, not error
-        response = self.client.get('/patient/api/status/?hours=999')
-        self.assertEqual(response.status_code, 200)
+        self.frame = self._create_analysed_frame(self.session, frame_index=0, pressure=1800)
 
-    def test_non_integer_hours_defaults_to_one(self):
-        # Non-integer value — exercises the ValueError branch in the view
-        response = self.client.get('/patient/api/status/?hours=abc')
-        self.assertEqual(response.status_code, 200)
-        data = json.loads(response.content)
-        self.assertIn('alert', data)  # valid response shape returned
+    def _create_analysed_frame(self, session, frame_index, pressure):
+        flat = [1] * 1024
+        # Build a meaningful contact block so metrics and plain-English text are generated.
+        for row in range(12, 20):
+            for col in range(10, 22):
+                flat[row * 32 + col] = pressure
 
-    def test_chart_data_counts_high_pressure_frames_by_hour(self):
-        # 2 high-pressure frames, 1 normal — only high-pressure ones should be counted
-        self._make_frame(minutes_ago=20, high_pressure=True)
-        self._make_frame(minutes_ago=25, high_pressure=True)
-        self._make_frame(minutes_ago=35, high_pressure=False)
-        response = self.client.get('/patient/api/status/?hours=1')
-        data = json.loads(response.content)
-        # Labels and counts must always be the same length
-        self.assertEqual(len(data['chart_data']['labels']), len(data['chart_data']['counts']))
-        total_high = sum(data['chart_data']['counts'])
-        self.assertEqual(total_high, 2)
-
-    def test_six_hour_window_returns_seven_buckets(self):
-        # 6-hour window should produce 7 labels (hours 0 through 6 inclusive)
-        self._make_frame(minutes_ago=10)
-        response = self.client.get('/patient/api/status/?hours=6')
-        data = json.loads(response.content)
-        self.assertEqual(len(data['chart_data']['labels']), 7)
-        self.assertEqual(len(data['chart_data']['counts']), 7)
-
-    def test_twenty_four_hour_window_returns_twenty_five_buckets(self):
-        self._make_frame(minutes_ago=10)
-        response = self.client.get('/patient/api/status/?hours=24')
-        data = json.loads(response.content)
-        self.assertEqual(len(data['chart_data']['labels']), 25)
-        self.assertEqual(len(data['chart_data']['counts']), 25)
-
-
-class SubmitPainZonesViewTest(TestCase):
-    def setUp(self):
-        self.patient = User.objects.create_user(
-            username='painpat', password='pass', role='patient'
+        frame = SensorFrame.objects.create(
+            session=session,
+            timestamp=session.start_time + timedelta(seconds=frame_index * 30),
+            frame_index=frame_index,
+            data=json.dumps(flat),
         )
-        self.client.login(username='painpat', password='pass')
+        analyse_frame(frame)
+        return frame
 
-    def test_valid_submission_creates_report(self):
-        response = self.client.post('/patient/pain-zones/', {
-            'zones': ['lower_back', 'tailbone'],
-            'note': 'sharp pain',
-        })
-        self.assertRedirects(response, '/patient/')
-        self.assertEqual(PainZoneReport.objects.filter(user=self.patient).count(), 1)
-        report = PainZoneReport.objects.get(user=self.patient)
-        self.assertEqual(sorted(report.zones), ['lower_back', 'tailbone'])
-        self.assertEqual(report.note, 'sharp pain')
+    def test_patient_dashboard_and_live_heatmap_api(self):
+        self.client.login(username="legacy_patient", password="patient123")
 
-    def test_invalid_zone_does_not_create_report(self):
-        response = self.client.post('/patient/pain-zones/', {
-            'zones': ['made_up_zone'],
-            'note': '',
-        })
-        self.assertEqual(response.status_code, 200)  # re-renders dashboard
-        self.assertEqual(PainZoneReport.objects.filter(user=self.patient).count(), 0)
+        dashboard = self.client.get("/patient/")
+        self.assertEqual(dashboard.status_code, 200)
 
-    def test_non_patient_forbidden(self):
-        admin = User.objects.create_user(
-            username='adminx', password='pass', role='admin'
+        frames_resp = self.client.get(f"/api/session/{self.session.id}/frames/")
+        self.assertEqual(frames_resp.status_code, 200)
+
+        frames = frames_resp.json().get("frames", [])
+        self.assertEqual(len(frames), 1)
+        self.assertIn("metrics", frames[0])
+        self.assertTrue(frames[0]["metrics"].get("plain_english"))
+
+    def test_patient_can_add_timestamped_comment(self):
+        self.client.login(username="legacy_patient", password="patient123")
+
+        payload = {
+            "text": "Pressure spike when leaning left",
+            "frame_id": self.frame.id,
+            "timestamp": self.frame.timestamp.isoformat(),
+        }
+        create_resp = self.client.post(
+            f"/api/session/{self.session.id}/comment/",
+            data=json.dumps(payload),
+            content_type="application/json",
         )
-        self.client.login(username='adminx', password='pass')
-        response = self.client.post('/patient/pain-zones/', {
-            'zones': ['lower_back'],
-        })
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(create_resp.status_code, 200)
 
+        comments_resp = self.client.get(f"/api/session/{self.session.id}/comments/")
+        self.assertEqual(comments_resp.status_code, 200)
+        comments = comments_resp.json().get("comments", [])
+        self.assertEqual(len(comments), 1)
+        self.assertEqual(comments[0]["text"], payload["text"])
+        self.assertEqual(comments[0]["frame_id"], self.frame.id)
 
-class PatientDashboardViewTest(TestCase):
-    def setUp(self):
-        self.patient = User.objects.create_user(
-            username='dashpat', password='pass', role='patient'
+    def test_report_page_and_pdf_download(self):
+        self.client.login(username="legacy_patient", password="patient123")
+
+        page_resp = self.client.get("/report/")
+        self.assertEqual(page_resp.status_code, 200)
+        self.assertContains(page_resp, "Medical History Report")
+
+        pdf_resp = self.client.get("/report/?download=1")
+        self.assertEqual(pdf_resp.status_code, 200)
+        self.assertIn("application/pdf", (pdf_resp.get("Content-Type") or "").lower())
+
+    def test_clinician_dashboard_sees_risk_summary(self):
+        self.client.login(username="dr_legacy", password="clinic123")
+
+        resp = self.client.get("/clinician/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, self.patient.username)
+
+        self.assertGreater(PressureMetrics.objects.count(), 0)
+
+    def test_patient_cannot_access_other_patient_session_frames(self):
+        other_patient = User.objects.create_user(username="other_patient", password="patient123")
+        UserProfile.objects.create(user=other_patient, role="patient", assigned_clinician=self.clinician)
+        other_session = SensorSession.objects.create(
+            patient=other_patient,
+            session_date=timezone.now().date(),
+            start_time=timezone.now() - timedelta(minutes=3),
         )
-        self.client.login(username='dashpat', password='pass')
+        self._create_analysed_frame(other_session, frame_index=0, pressure=2200)
 
-    def test_dashboard_renders_with_zone_choices(self):
-        response = self.client.get('/patient/')
-        self.assertEqual(response.status_code, 200)
-        self.assertIn('zone_choices', response.context)
-        self.assertEqual(len(response.context['zone_choices']), 8)
-
-    def test_dashboard_context_has_no_frames_key(self):
-        response = self.client.get('/patient/')
-        self.assertNotIn('frames', response.context)
+        self.client.login(username="legacy_patient", password="patient123")
+        forbidden = self.client.get(f"/api/session/{other_session.id}/frames/")
+        self.assertEqual(forbidden.status_code, 403)

@@ -1,15 +1,20 @@
 #!/usr/bin/env python
 import os
-import django
 
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'sensore.settings')
-django.setup()
 
-from django.contrib.auth import authenticate
+def main():
+    import django
+    from django.contrib.auth import authenticate
 
-# Test all users
-users = [('admin', 'admin123'), ('clinician1', 'clinician123'), ('patient1', 'patient123')]
-for username, password in users:
-    auth_result = authenticate(username=username, password=password)
-    status = '✓' if auth_result else '✗'
-    print(f'{status} {username}: {"OK" if auth_result else "FAILED"}')
+    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'sensore.settings')
+    django.setup()
+
+    users = [('admin', 'admin123'), ('clinician1', 'clinician123'), ('patient1', 'patient123')]
+    for username, password in users:
+        auth_result = authenticate(username=username, password=password)
+        status = 'OK' if auth_result else 'FAILED'
+        print(f'{username}: {status}')
+
+
+if __name__ == '__main__':
+    main()
