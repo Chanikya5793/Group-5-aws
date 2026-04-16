@@ -49,10 +49,12 @@ echo -e "${GREEN}✓${NC} Demo data loaded"
 
 # 6. Import real Sensore CSV (de0e9b2c_20251013.csv)
 REAL_CSV="sample_data/de0e9b2c_20251013.csv"
+REAL_LOGIN_AVAILABLE=0
 if [ -f "$REAL_CSV" ]; then
   echo "→ Importing real Sensore hardware CSV (4,190 frames — this takes ~60 s)..."
   python manage.py import_real_csv --path "$REAL_CSV"
   echo -e "${GREEN}✓${NC} Real session imported"
+  REAL_LOGIN_AVAILABLE=1
 else
   echo -e "${YELLOW}⚠  Real CSV not found at $REAL_CSV${NC}"
   echo "   Copy de0e9b2c_20251013.csv into sample_data/ and run:"
@@ -73,9 +75,14 @@ echo -e "  │    python manage.py runserver                      │"
 echo -e "  │                                                    │"
 echo -e "  │  Then open:  http://127.0.0.1:8000                 │"
 echo -e "  │                                                    │"
-echo -e "  │  Real data login (de0e9b2c_20251013.csv):          │"
-echo -e "  │    Patient:   de0e9b2c / patient123                │"
-echo -e "  │                                                    │"
+if [ "$REAL_LOGIN_AVAILABLE" -eq 1 ]; then
+  echo -e "  │  Real data login (de0e9b2c_20251013.csv):          │"
+  echo -e "  │    Patient:   de0e9b2c / patient123                │"
+  echo -e "  │                                                    │"
+else
+  echo -e "  │  Real data login: unavailable (CSV not imported)   │"
+  echo -e "  │                                                    │"
+fi
 echo -e "  │  Demo logins:                                      │"
 echo -e "  │    Patient:   patient_001 / patient123             │"
 echo -e "  │    Clinician: dr_smith    / clinic123              │"

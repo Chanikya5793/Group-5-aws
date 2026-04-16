@@ -109,8 +109,11 @@
         {% endfor %}
       {% endif %}
 
-      <form method="post">
+      <form method="post" action="{% url 'login' %}">
         {% csrf_token %}
+        {% if next %}
+        <input type="hidden" name="next" value="{{ next }}" />
+        {% endif %}
         <div class="form-group">
           <label class="form-label">Username</label>
           <input type="text" name="username" class="form-control" autocomplete="username" required />
