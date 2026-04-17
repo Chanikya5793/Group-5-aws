@@ -48,14 +48,22 @@ echo "→ Loading synthetic demo data..."
 python manage.py load_sample_data
 echo -e "${GREEN}✓${NC} Demo data loaded"
 
+check_real_dashboard_data() {
+  python manage.py shell -c "from django.contrib.auth.models import User; from sensore.models import SensorSession; u=User.objects.filter(username='de0e9b2c').first(); print(1 if u and SensorSession.objects.filter(patient=u, frames__isnull=False).exists() else 0)"
+}
+
 # 6. Import real Sensore CSV (de0e9b2c_20251013.csv)
 REAL_CSV="sample_data/de0e9b2c_20251013.csv"
 REAL_LOGIN_AVAILABLE=0
 if [ -f "$REAL_CSV" ]; then
   echo "→ Importing real Sensore hardware CSV (4,190 frames — this takes ~60 s)..."
   python manage.py import_real_csv --path "$REAL_CSV"
-  echo -e "${GREEN}✓${NC} Real session imported"
-  REAL_LOGIN_AVAILABLE=1
+  REAL_LOGIN_AVAILABLE=$(check_real_dashboard_data)
+  if [ "$REAL_LOGIN_AVAILABLE" -eq 1 ]; then
+    echo -e "${GREEN}✓${NC} Real session imported"
+  else
+    echo -e "${YELLOW}⚠  Real CSV command finished, but no session data was created for de0e9b2c${NC}"
+  fi
 else
   echo -e "${YELLOW}⚠  Real CSV not found at $REAL_CSV${NC}"
   echo "   Copy de0e9b2c_20251013.csv into sample_data/ and run:"
@@ -70,6 +78,7 @@ echo -e "${GREEN}✓${NC} Sample CSVs written to ./sample_data/"
 # 8. Guarantee login credentials (idempotent)
 echo "→ Ensuring all demo login credentials are valid..."
 python manage.py ensure_demo_logins
+REAL_LOGIN_AVAILABLE=$(check_real_dashboard_data)
 echo -e "${GREEN}✓${NC} Login credentials synced"
 
 echo ""
@@ -82,12 +91,13 @@ echo -e "  │                                                    │"
 echo -e "  │  Then open:  http://127.0.0.1:8000                 │"
 echo -e "  │                                                    │"
 if [ "$REAL_LOGIN_AVAILABLE" -eq 1 ]; then
-  echo -e "  │  Real data login (CSV imported):                    │"
+  echo -e "  │  Real data login (dashboard data ready):            │"
   echo -e "  │    Patient:   de0e9b2c / patient123                │"
   echo -e "  │                                                    │"
 else
-  echo -e "  │  Real account login (CSV not imported yet):        │"
+  echo -e "  │  Real account login (no dashboard session yet):    │"
   echo -e "  │    Patient:   de0e9b2c / patient123                │"
+  echo -e "  │    Import:    python manage.py import_real_csv     │"
   echo -e "  │                                                    │"
 fi
 echo -e "  │  Demo logins:                                      │"

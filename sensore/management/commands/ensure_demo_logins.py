@@ -12,10 +12,15 @@ if __name__ == "__main__":
     import django
     django.setup()
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
 from django.core.management.base import BaseCommand
 
 from accounts.models import UserProfile
+from sensore.models import SensorSession
+
+REAL_CSV_FILENAME = "de0e9b2c_20251013.csv"
 
 
 class Command(BaseCommand):
@@ -156,11 +161,46 @@ class Command(BaseCommand):
             medical_notes="Real hardware login account for de0e9b2c_20251013.csv",
         )
 
+        has_real_dashboard_data = SensorSession.objects.filter(
+            patient=real_patient,
+            frames__isnull=False,
+        ).exists()
+
+        if not has_real_dashboard_data:
+            real_csv_path = os.path.join(settings.BASE_DIR, "sample_data", REAL_CSV_FILENAME)
+            if os.path.exists(real_csv_path):
+                self.stdout.write(
+                    "No sessions found for de0e9b2c; importing bundled real CSV for dashboard data..."
+                )
+                try:
+                    call_command("import_real_csv", path=real_csv_path)
+                except Exception as exc:
+                    self.stdout.write(
+                        self.style.WARNING(
+                            f"Could not import real CSV automatically: {exc}"
+                        )
+                    )
+            else:
+                self.stdout.write(
+                    self.style.WARNING(
+                        f"Real CSV missing at sample_data/{REAL_CSV_FILENAME}; "
+                        "de0e9b2c can log in but dashboard data will be empty until imported."
+                    )
+                )
+
+        has_real_dashboard_data = SensorSession.objects.filter(
+            patient=real_patient,
+            frames__isnull=False,
+        ).exists()
+
         self.stdout.write(self.style.SUCCESS("Demo credentials are now guaranteed:"))
         self.stdout.write("  admin / admin123")
         self.stdout.write("  dr_smith / clinic123")
         self.stdout.write("  patient_001 ... patient_005 / patient123")
-        self.stdout.write("  de0e9b2c / patient123")
+        if has_real_dashboard_data:
+            self.stdout.write("  de0e9b2c / patient123 (with dashboard data)")
+        else:
+            self.stdout.write("  de0e9b2c / patient123 (credentials only; import real CSV for data)")
 
 
 if __name__ == "__main__":

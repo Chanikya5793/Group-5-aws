@@ -33,7 +33,7 @@ if __name__ == '__main__':
 
 from django.conf import settings
 from django.contrib.auth.models import User
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
 from accounts.models import UserProfile
@@ -111,18 +111,16 @@ class Command(BaseCommand):
         )
 
         if not os.path.exists(csv_path):
-            self.stderr.write(
+            raise CommandError(
                 f'CSV file not found: {csv_path}\n'
                 f'Place the file at that path and re-run.'
             )
-            return
 
         self.stdout.write(f'Reading {csv_path} …')
         frames_data = _parse_csv(csv_path)
 
         if not frames_data:
-            self.stderr.write('No frames parsed — check CSV format.')
-            return
+            raise CommandError('No frames parsed — check CSV format.')
 
         max_frames = options['max_frames']
         if max_frames:

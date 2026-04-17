@@ -42,6 +42,11 @@ if not SECRET_KEY:
 ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1,testserver")
 CSRF_TRUSTED_ORIGINS = env_list("DJANGO_CSRF_TRUSTED_ORIGINS", "")
 
+# Make local LAN testing work out of the box when using Django's dev server.
+# This stays scoped to debug/dev-server sessions and does not affect production.
+if DEBUG and RUNNING_DEV_SERVER and "*" not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append("*")
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
