@@ -1,11 +1,11 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Sensore — Sign In</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
   <style>
     :root {
       --navy: #0a1628; --navy-mid: #0f2744; --navy-light: #1a3a5c;
@@ -45,6 +45,7 @@
       border: 1px solid var(--card-border);
       border-radius: 14px;
       padding: 2rem;
+      -webkit-backdrop-filter: blur(12px);
       backdrop-filter: blur(12px);
     }
     .card h2 { font-size: 1.1rem; font-weight: 600; color: var(--white); margin-bottom: 1.5rem; }
@@ -109,24 +110,27 @@
         {% endfor %}
       {% endif %}
 
-      <form method="post" action="{% url 'login' %}">
+      <form method="post">
         {% csrf_token %}
         {% if next %}
-        <input type="hidden" name="next" value="{{ next }}" />
+        <input type="hidden" name="next" value="{{ next }}">
         {% endif %}
         <div class="form-group">
-          <label class="form-label">Username</label>
-          <input type="text" name="username" class="form-control" autocomplete="username" required />
+          <label class="form-label" for="id_username">Username</label>
+          <input id="id_username" type="text" name="username" class="form-control" autocomplete="username" placeholder="Enter your username" required>
         </div>
         <div class="form-group">
-          <label class="form-label">Password</label>
-          <input type="password" name="password" class="form-control" autocomplete="current-password" required />
+          <label class="form-label" for="id_password">Password</label>
+          <input id="id_password" type="password" name="password" class="form-control" autocomplete="current-password" placeholder="Enter your password" required>
         </div>
         <button type="submit" class="btn-submit">Sign In</button>
       </form>
 
       <div class="demo-creds">
         <h3>Demo Credentials</h3>
+        {% if real_login_available %}
+        <div class="cred-row"><span class="cred-role">Real Sensor</span><span class="cred-val">de0e9b2c / patient123</span></div>
+        {% endif %}
         <div class="cred-row"><span class="cred-role">Patient</span><span class="cred-val">patient_001 / patient123</span></div>
         <div class="cred-row"><span class="cred-role">Clinician</span><span class="cred-val">dr_smith / clinic123</span></div>
         <div class="cred-row"><span class="cred-role">Admin</span><span class="cred-val">admin / admin123</span></div>

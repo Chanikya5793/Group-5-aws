@@ -67,6 +67,11 @@ echo "→ Generating synthetic CSV test files..."
 python generate_sample_csvs.py 2>/dev/null || true
 echo -e "${GREEN}✓${NC} Sample CSVs written to ./sample_data/"
 
+# 8. Guarantee login credentials (idempotent)
+echo "→ Ensuring all demo login credentials are valid..."
+python manage.py ensure_demo_logins
+echo -e "${GREEN}✓${NC} Login credentials synced"
+
 echo ""
 echo -e "${CYAN}  ┌────────────────────────────────────────────────────┐"
 echo -e "  │  ✅  Setup complete!  Start the server:             │"
@@ -77,11 +82,12 @@ echo -e "  │                                                    │"
 echo -e "  │  Then open:  http://127.0.0.1:8000                 │"
 echo -e "  │                                                    │"
 if [ "$REAL_LOGIN_AVAILABLE" -eq 1 ]; then
-  echo -e "  │  Real data login (de0e9b2c_20251013.csv):          │"
+  echo -e "  │  Real data login (CSV imported):                    │"
   echo -e "  │    Patient:   de0e9b2c / patient123                │"
   echo -e "  │                                                    │"
 else
-  echo -e "  │  Real data login: unavailable (CSV not imported)   │"
+  echo -e "  │  Real account login (CSV not imported yet):        │"
+  echo -e "  │    Patient:   de0e9b2c / patient123                │"
   echo -e "  │                                                    │"
 fi
 echo -e "  │  Demo logins:                                      │"

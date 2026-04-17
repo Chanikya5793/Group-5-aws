@@ -1,6 +1,6 @@
-from django.shortcuts import render, redirect
-from django.contrib.auth import authenticate, login, logout
 from django.contrib import messages
+from django.contrib.auth import authenticate, get_user_model, login, logout
+from django.shortcuts import redirect, render
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_protect, ensure_csrf_cookie
@@ -25,6 +25,7 @@ def _safe_next_url(request):
 @ensure_csrf_cookie
 @csrf_protect
 def login_view(request):
+    User = get_user_model()
     next_url = _safe_next_url(request)
 
     if request.user.is_authenticated:
@@ -40,7 +41,11 @@ def login_view(request):
         else:
             messages.error(request, 'Invalid username or password.')
 
-    return render(request, 'accounts/login.html', {'next': next_url})
+    real_login_available = User.objects.filter(username='de0e9b2c').exists()
+    return render(request, 'accounts/login.html', {
+        'next': next_url,
+        'real_login_available': real_login_available,
+    })
 
 
 def logout_view(request):

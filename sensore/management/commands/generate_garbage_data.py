@@ -7,9 +7,19 @@ less-clean datasets.
 """
 import json
 import math
+import os
 import random
 import string
+import sys
 from datetime import date, datetime, timedelta
+
+if __name__ == '__main__':
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'sensore_project.settings')
+    import django
+    django.setup()
 
 import numpy as np
 from django.contrib.auth.models import User
@@ -179,9 +189,15 @@ class Command(BaseCommand):
                     'email': f"{username}@sensore.test",
                 },
             )
-            if created:
+            changed = created
+            if not user.is_active:
+                user.is_active = True
+                changed = True
+            if not user.check_password(password):
                 user.set_password(password)
-                user.save(update_fields=['password'])
+                changed = True
+            if changed:
+                user.save()
 
             profile, _ = UserProfile.objects.get_or_create(user=user, defaults={'role': 'clinician'})
             if profile.role != 'clinician':
@@ -440,3 +456,9 @@ class Command(BaseCommand):
         while UserProfile.objects.filter(patient_id=pid).exists():
             pid = f"{base}-{self._random_token(3).upper()}"
         return pid
+
+
+if __name__ == '__main__':
+    from django.core.management import execute_from_command_line
+
+    execute_from_command_line([sys.argv[0], 'generate_garbage_data', *sys.argv[1:]])

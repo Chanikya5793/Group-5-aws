@@ -110,7 +110,7 @@ python manage.py check --deploy
 python manage.py makemigrations --check --dry-run
 python manage.py migrate --noinput
 python manage.py test -v 2
-python docs/validate_hasitha_tasks.py
+python docs/validate_harshitha_tasks.py
 python test_auth.py
 python test_login.py
 ```

@@ -20,7 +20,16 @@ What this command does:
 """
 import json
 import os
+import sys
 from datetime import date, datetime, timedelta
+
+if __name__ == '__main__':
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'sensore_project.settings')
+    import django
+    django.setup()
 
 from django.conf import settings
 from django.contrib.auth.models import User
@@ -127,9 +136,13 @@ class Command(BaseCommand):
             defaults={'first_name': 'Dr. Sarah', 'last_name': 'Smith',
                       'email': 'sarah.smith@hospital.org'}
         )
+        clin_user.is_active = True
         clin_user.set_password('clinic123')
         clin_user.save()
-        UserProfile.objects.get_or_create(user=clin_user, defaults={'role': 'clinician'})
+        clin_profile, _ = UserProfile.objects.get_or_create(user=clin_user, defaults={'role': 'clinician'})
+        if clin_profile.role != 'clinician':
+            clin_profile.role = 'clinician'
+            clin_profile.save(update_fields=['role'])
 
         # ── Create / fetch patient ──────────────────────────────────────
         patient, _ = User.objects.get_or_create(
@@ -140,15 +153,35 @@ class Command(BaseCommand):
                 'email':      f'{PATIENT_USERNAME}@sensore.device',
             }
         )
+        patient.is_active = True
         patient.set_password('patient123')
         patient.save()
-        UserProfile.objects.get_or_create(user=patient, defaults={
+        patient_profile, _ = UserProfile.objects.get_or_create(user=patient, defaults={
             'role':                 'patient',
             'patient_id':           PATIENT_USERNAME.upper(),
             'assigned_clinician':   clin_user,
             'date_of_birth':        date(1970, 1, 1),
             'medical_notes':        f'Real hardware session imported from {CSV_FILENAME}',
         })
+        profile_updates = []
+        if patient_profile.role != 'patient':
+            patient_profile.role = 'patient'
+            profile_updates.append('role')
+        if patient_profile.patient_id != PATIENT_USERNAME.upper():
+            patient_profile.patient_id = PATIENT_USERNAME.upper()
+            profile_updates.append('patient_id')
+        if patient_profile.assigned_clinician_id != clin_user.id:
+            patient_profile.assigned_clinician = clin_user
+            profile_updates.append('assigned_clinician')
+        if patient_profile.date_of_birth is None:
+            patient_profile.date_of_birth = date(1970, 1, 1)
+            profile_updates.append('date_of_birth')
+        expected_notes = f'Real hardware session imported from {CSV_FILENAME}'
+        if not patient_profile.medical_notes:
+            patient_profile.medical_notes = expected_notes
+            profile_updates.append('medical_notes')
+        if profile_updates:
+            patient_profile.save(update_fields=profile_updates)
         self.stdout.write(f'  Patient user: {PATIENT_USERNAME}  (password: patient123)')
 
         # ── Create session ──────────────────────────────────────────────
@@ -247,3 +280,13 @@ class Command(BaseCommand):
         self.stdout.write(
             'Log in as de0e9b2c / patient123 at http://127.0.0.1:8000'
         )
+
+
+if __name__ == '__main__':
+    import os
+    import sys
+
+    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'sensore_project.settings')
+    from django.core.management import execute_from_command_line
+
+    execute_from_command_line([sys.argv[0], 'import_real_csv', *sys.argv[1:]])

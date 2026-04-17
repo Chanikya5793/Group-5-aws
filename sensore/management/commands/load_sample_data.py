@@ -4,8 +4,18 @@ Creates 5 patients, 1 clinician, 1 admin, with 3 sessions each.
 """
 import json
 import math
+import os
 import random
+import sys
 from datetime import date, datetime, timedelta
+
+if __name__ == '__main__':
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'sensore_project.settings')
+    import django
+    django.setup()
 
 import numpy as np
 from django.contrib.auth.models import User
@@ -27,16 +37,26 @@ class Command(BaseCommand):
         # Admin
         admin_user, _ = User.objects.get_or_create(username='admin',
             defaults={'first_name': 'System', 'last_name': 'Admin', 'is_staff': True, 'is_superuser': True})
+        admin_user.is_staff = True
+        admin_user.is_superuser = True
+        admin_user.is_active = True
         admin_user.set_password('admin123')
         admin_user.save()
-        UserProfile.objects.get_or_create(user=admin_user, defaults={'role': 'admin'})
+        admin_profile, _ = UserProfile.objects.get_or_create(user=admin_user, defaults={'role': 'admin'})
+        if admin_profile.role != 'admin':
+            admin_profile.role = 'admin'
+            admin_profile.save(update_fields=['role'])
 
         # Clinician
         clin_user, _ = User.objects.get_or_create(username='dr_smith',
             defaults={'first_name': 'Dr. Sarah', 'last_name': 'Smith', 'email': 'sarah.smith@hospital.org'})
+        clin_user.is_active = True
         clin_user.set_password('clinic123')
         clin_user.save()
-        UserProfile.objects.get_or_create(user=clin_user, defaults={'role': 'clinician'})
+        clin_profile, _ = UserProfile.objects.get_or_create(user=clin_user, defaults={'role': 'clinician'})
+        if clin_profile.role != 'clinician':
+            clin_profile.role = 'clinician'
+            clin_profile.save(update_fields=['role'])
 
         # Patients
         patient_data = [
@@ -49,16 +69,33 @@ class Command(BaseCommand):
 
         patients = []
         for pid, fn, ln, birth_year in patient_data:
+            dob = date(birth_year, random.randint(1, 12), random.randint(1, 28))
             u, _ = User.objects.get_or_create(username=pid,
                 defaults={'first_name': fn, 'last_name': ln, 'email': f'{pid}@sensore.test'})
+            u.is_active = True
             u.set_password('patient123')
             u.save()
-            UserProfile.objects.get_or_create(user=u, defaults={
+            profile, _ = UserProfile.objects.get_or_create(user=u, defaults={
                 'role': 'patient',
                 'patient_id': pid.upper(),
                 'assigned_clinician': clin_user,
-                'date_of_birth': date(birth_year, random.randint(1, 12), random.randint(1, 28)),
+                'date_of_birth': dob,
             })
+            changed_fields = []
+            if profile.role != 'patient':
+                profile.role = 'patient'
+                changed_fields.append('role')
+            if profile.patient_id != pid.upper():
+                profile.patient_id = pid.upper()
+                changed_fields.append('patient_id')
+            if profile.assigned_clinician_id != clin_user.id:
+                profile.assigned_clinician = clin_user
+                changed_fields.append('assigned_clinician')
+            if profile.date_of_birth is None:
+                profile.date_of_birth = dob
+                changed_fields.append('date_of_birth')
+            if changed_fields:
+                profile.save(update_fields=changed_fields)
             patients.append(u)
             self.stdout.write(f"  Created patient: {u.get_full_name()} ({pid})")
 
@@ -176,3 +213,13 @@ class Command(BaseCommand):
             varied = np.roll(varied, shift_x, axis=1)
             varied = np.roll(varied, shift_y, axis=0)
         return np.clip(varied, 1, 4095)
+
+
+if __name__ == '__main__':
+    import os
+    import sys
+
+    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'sensore_project.settings')
+    from django.core.management import execute_from_command_line
+
+    execute_from_command_line([sys.argv[0], 'load_sample_data', *sys.argv[1:]])
