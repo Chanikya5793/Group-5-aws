@@ -1,6 +1,8 @@
 from django.contrib.auth.models import User
 from django.test import Client, TestCase
 
+from .models import UserProfile
+
 
 class LoginCsrfTests(TestCase):
     def setUp(self):
@@ -47,3 +49,19 @@ class LoginCsrfTests(TestCase):
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response.url, "/dashboard/")
+
+
+class UserProfileSignalTests(TestCase):
+    def test_profile_created_for_regular_user(self):
+        user = User.objects.create_user(username="signal_patient", password="pass12345")
+        profile = UserProfile.objects.get(user=user)
+        self.assertEqual(profile.role, "patient")
+
+    def test_profile_created_as_admin_for_superuser(self):
+        user = User.objects.create_superuser(
+            username="signal_admin",
+            email="signal_admin@example.com",
+            password="pass12345",
+        )
+        profile = UserProfile.objects.get(user=user)
+        self.assertEqual(profile.role, "admin")

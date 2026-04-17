@@ -1,25 +1,55 @@
-import json
 import io
-from datetime import datetime, timedelta
+import json
+from datetime import datetime
 
-from django.shortcuts import render, get_object_or_404, redirect
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
-from django.http import JsonResponse, HttpResponse
-from django.views.decorators.http import require_POST, require_GET
+from django.http import HttpResponse, HttpResponseForbidden, JsonResponse
+from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
-from django.db.models import Avg, Max, Count
+from django.views.decorators.http import require_GET, require_POST
 
-from .models import SensorSession, SensorFrame, PressureMetrics, Comment, PressureAlert, Report
-from .utils import analyse_frame, generate_session_report_data, get_risk_level
 from accounts.models import UserProfile
+
+from .models import (Comment, PressureAlert, PressureMetrics, Report,
+                     SensorFrame, SensorSession)
+from .utils import analyse_frame, generate_session_report_data, get_risk_level
 
 
 def get_user_role(user):
     try:
         return user.profile.role
+    except UserProfile.DoesNotExist:
+        if user.is_superuser or user.is_staff:
+            return 'admin'
+        return 'patient'
     except Exception:
         return 'patient'
+
+
+def user_can_access_patient(user, patient):
+    """Role-aware access check for patient-linked resources."""
+    role = get_user_role(user)
+
+    if role == 'admin':
+        return True
+
+    if role == 'patient':
+        return patient.id == user.id
+
+    if role == 'clinician':
+        try:
+            return patient.profile.assigned_clinician_id == user.id
+        except Exception:
+            return False
+
+    return False
+
+
+def patient_access_error(user, patient):
+    if user_can_access_patient(user, patient):
+        return None
+    return JsonResponse({'error': 'Forbidden'}, status=403)
 
 
 @login_required
@@ -64,11 +94,13 @@ def clinician_dashboard(request):
     if role not in ('clinician', 'admin'):
         return redirect('patient_dashboard')
 
-    try:
-        patients = request.user.patients.all()
-        patient_users = User.objects.filter(profile__in=patients)
-    except Exception:
-        patient_users = User.objects.filter(profile__role='patient')
+    if role == 'admin':
+        patient_users = User.objects.filter(profile__role='patient').order_by('username')
+    else:
+        patient_users = User.objects.filter(
+            profile__role='patient',
+            profile__assigned_clinician=request.user,
+        ).order_by('username')
 
     patient_summaries = []
     for patient in patient_users:
@@ -86,7 +118,12 @@ def clinician_dashboard(request):
             'latest_risk': latest_risk,
         })
 
-    all_alerts = PressureAlert.objects.filter(acknowledged=False).order_by('-created_at')[:10]
+    all_alerts_qs = PressureAlert.objects.filter(acknowledged=False)
+    if role == 'clinician':
+        all_alerts_qs = all_alerts_qs.filter(
+            session__patient__profile__assigned_clinician=request.user
+        )
+    all_alerts = all_alerts_qs.order_by('-created_at')[:10]
 
     context = {
         'patient_summaries': patient_summaries,
@@ -101,15 +138,43 @@ def clinician_dashboard(request):
 @login_required
 @require_GET
 def api_session_frames(request, session_id):
-    """Return all frames for a session with metrics."""
+    """Return a session frame window with metrics.
+
+    Query parameters:
+      - limit=<int>: return the latest N frames (default: 1200, max: 5000)
+      - limit=all: return the full session
+    """
     session = get_object_or_404(SensorSession, id=session_id)
 
-    # Patients can only see their own data
-    if get_user_role(request.user) == 'patient' and session.patient != request.user:
-        return JsonResponse({'error': 'Forbidden'}, status=403)
+    access_error = patient_access_error(request.user, session.patient)
+    if access_error:
+        return access_error
+
+    total_frames = session.frames.count()
+    default_limit = 1200
+    max_limit = 5000
+
+    limit_param = (request.GET.get('limit') or '').strip().lower()
+    if limit_param in {'all', 'full'}:
+        start_index = 0
+        end_index = total_frames
+    else:
+        try:
+            requested_limit = int(limit_param) if limit_param else default_limit
+        except ValueError:
+            requested_limit = default_limit
+        requested_limit = max(1, min(requested_limit, max_limit))
+        start_index = max(0, total_frames - requested_limit)
+        end_index = total_frames
 
     frames_data = []
-    for frame in session.frames.prefetch_related('metrics').order_by('frame_index')[:500]:
+    frames_qs = (
+        session.frames
+        .select_related('metrics')
+        .order_by('frame_index')[start_index:end_index]
+    )
+
+    for frame in frames_qs:
         frame_dict = {
             'id': frame.id,
             'frame_index': frame.frame_index,
@@ -130,7 +195,18 @@ def api_session_frames(request, session_id):
             }
         frames_data.append(frame_dict)
 
-    return JsonResponse({'frames': frames_data, 'session_id': session_id})
+    first_frame_index = frames_data[0]['frame_index'] if frames_data else None
+    last_frame_index = frames_data[-1]['frame_index'] if frames_data else None
+
+    return JsonResponse({
+        'frames': frames_data,
+        'session_id': session_id,
+        'total_frames': total_frames,
+        'returned_frames': len(frames_data),
+        'first_frame_index': first_frame_index,
+        'last_frame_index': last_frame_index,
+        'truncated': start_index > 0,
+    })
 
 
 @login_required
@@ -138,8 +214,9 @@ def api_session_frames(request, session_id):
 def api_latest_frame(request, session_id):
     """Return the latest frame with full metrics."""
     session = get_object_or_404(SensorSession, id=session_id)
-    if get_user_role(request.user) == 'patient' and session.patient != request.user:
-        return JsonResponse({'error': 'Forbidden'}, status=403)
+    access_error = patient_access_error(request.user, session.patient)
+    if access_error:
+        return access_error
 
     frame = session.frames.order_by('-frame_index').first()
     if not frame:
@@ -173,8 +250,9 @@ def api_frame_detail(request, frame_id):
     frame = get_object_or_404(SensorFrame, id=frame_id)
     session = frame.session
 
-    if get_user_role(request.user) == 'patient' and session.patient != request.user:
-        return JsonResponse({'error': 'Forbidden'}, status=403)
+    access_error = patient_access_error(request.user, session.patient)
+    if access_error:
+        return access_error
 
     data = {
         'id': frame.id,
@@ -202,8 +280,9 @@ def api_frame_detail(request, frame_id):
 def api_session_metrics_timeline(request, session_id):
     """Return timeline of metrics for charts."""
     session = get_object_or_404(SensorSession, id=session_id)
-    if get_user_role(request.user) == 'patient' and session.patient != request.user:
-        return JsonResponse({'error': 'Forbidden'}, status=403)
+    access_error = patient_access_error(request.user, session.patient)
+    if access_error:
+        return access_error
 
     report_data = generate_session_report_data(session)
     return JsonResponse(report_data)
@@ -217,9 +296,9 @@ def api_add_comment(request, session_id):
 
     session = get_object_or_404(SensorSession, id=session_id)
 
-    # Patients can only comment on their own sessions
-    if get_user_role(request.user) == 'patient' and session.patient != request.user:
-        return JsonResponse({'error': 'Forbidden'}, status=403)
+    access_error = patient_access_error(request.user, session.patient)
+    if access_error:
+        return access_error
 
     try:
         body = json.loads(request.body)
@@ -274,8 +353,9 @@ def api_add_comment(request, session_id):
 def api_session_comments(request, session_id):
     """Return all comments for a session."""
     session = get_object_or_404(SensorSession, id=session_id)
-    if get_user_role(request.user) == 'patient' and session.patient != request.user:
-        return JsonResponse({'error': 'Forbidden'}, status=403)
+    access_error = patient_access_error(request.user, session.patient)
+    if access_error:
+        return access_error
 
     comments = Comment.objects.filter(session=session, is_reply=False).order_by('created_at')
     data = []
@@ -307,6 +387,10 @@ def api_acknowledge_alert(request, alert_id):
         return JsonResponse({'error': 'POST required'}, status=405)
 
     alert = get_object_or_404(PressureAlert, id=alert_id)
+    access_error = patient_access_error(request.user, alert.session.patient)
+    if access_error:
+        return access_error
+
     alert.acknowledged = True
     alert.acknowledged_by = request.user
     alert.save()
@@ -316,10 +400,13 @@ def api_acknowledge_alert(request, alert_id):
 @login_required
 def patient_report(request, patient_id=None):
     """View and generate a downloadable medical history report."""
-    if patient_id and get_user_role(request.user) in ('clinician', 'admin'):
+    if patient_id:
         patient = get_object_or_404(User, id=patient_id)
     else:
         patient = request.user
+
+    if not user_can_access_patient(request.user, patient):
+        return HttpResponseForbidden('Forbidden')
 
     sessions = SensorSession.objects.filter(patient=patient).order_by('-session_date')
 
@@ -369,12 +456,14 @@ def patient_report(request, patient_id=None):
 def generate_pdf_report(context):
     """Generate a PDF report using reportlab."""
     try:
-        from reportlab.lib.pagesizes import A4
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.lib.units import mm, cm
         from reportlab.lib import colors
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
-        from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
+        from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.lib.units import cm, mm
+        from reportlab.platypus import (HRFlowable, Paragraph,
+                                        SimpleDocTemplate, Spacer, Table,
+                                        TableStyle)
 
         buffer = io.BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=2*cm, bottomMargin=2*cm,
@@ -505,9 +594,11 @@ def generate_pdf_report(context):
 @require_GET
 def api_patient_sessions(request, patient_id):
     """Return sessions for a patient (clinician use)."""
-    if get_user_role(request.user) not in ('clinician', 'admin'):
-        return JsonResponse({'error': 'Forbidden'}, status=403)
     patient = get_object_or_404(User, id=patient_id)
+    access_error = patient_access_error(request.user, patient)
+    if access_error:
+        return access_error
+
     sessions = SensorSession.objects.filter(patient=patient).order_by('-session_date')[:20]
     data = [{
         'id': s.id,
@@ -529,6 +620,10 @@ def api_reply_comment(request, comment_id):
         return JsonResponse({'error': 'Only clinicians can reply'}, status=403)
 
     parent = get_object_or_404(Comment, id=comment_id)
+    access_error = patient_access_error(request.user, parent.session.patient)
+    if access_error:
+        return access_error
+
     try:
         body = json.loads(request.body)
     except json.JSONDecodeError:
@@ -566,6 +661,10 @@ def api_flag_session(request, session_id):
         return JsonResponse({'error': 'Forbidden'}, status=403)
 
     session = get_object_or_404(SensorSession, id=session_id)
+    access_error = patient_access_error(request.user, session.patient)
+    if access_error:
+        return access_error
+
     session.flagged_for_review = not session.flagged_for_review
     session.save()
     return JsonResponse({'flagged': session.flagged_for_review})

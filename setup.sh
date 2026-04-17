@@ -32,13 +32,14 @@ source venv/bin/activate
 echo -e "${GREEN}✓${NC} Virtual environment active"
 
 # 3. Install dependencies
-echo "→ Installing dependencies (Django, NumPy, ReportLab)..."
+echo "→ Installing dependencies from requirements.txt..."
 pip install --upgrade pip -q
-pip install "Django>=4.2,<5.0" numpy pandas reportlab -q
+pip install -r requirements.txt -q
 echo -e "${GREEN}✓${NC} Dependencies installed"
 
 # 4. Apply migrations
 echo "→ Applying database migrations..."
+python manage.py makemigrations --check --dry-run >/dev/null
 python manage.py migrate --no-input
 echo -e "${GREEN}✓${NC} Database ready"
 

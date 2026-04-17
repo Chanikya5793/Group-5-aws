@@ -46,6 +46,16 @@
     display: flex; justify-content: space-between;
     font-size: 0.72rem; color: var(--mist); margin-top: 4px;
   }
+  .frame-window-info {
+    font-size: 0.72rem;
+    color: var(--fog);
+    margin-top: 6px;
+    text-align: center;
+  }
+  .load-full-btn {
+    margin: 8px auto 0;
+    display: none;
+  }
 
   /* ── LIVE BADGE ── */
   .live-indicator {
@@ -196,6 +206,10 @@
               <span id="frameInfo" class="mono" style="font-size:0.7rem;color:var(--teal)">Frame <span id="frameNum">—</span></span>
               <span id="scrubberEnd">—</span>
             </div>
+            <div id="frameWindowInfo" class="frame-window-info">Loading frame window…</div>
+            <button id="loadFullFramesBtn" class="btn btn-secondary btn-sm load-full-btn" type="button" onclick="loadFullFrameHistory()">
+              Load full session timeline
+            </button>
           </div>
         </div>
       </div>
@@ -292,11 +306,30 @@ let allFrames = [];
 let currentFrameIndex = 0;
 let currentSessionId = {{ selected_session.id|default:'null' }};
 let metricsChart = null;
+const CONTACT_THRESHOLD = 100;
+const DEFAULT_FRAME_LIMIT = 1200;
+const NO_CONTACT_RGB = [6, 12, 24];
+
+let frameWindowMeta = {
+  totalFrames: 0,
+  returnedFrames: 0,
+  firstFrameIndex: null,
+  lastFrameIndex: null,
+  truncated: false,
+  fullLoaded: false,
+};
 
 // ── COLOUR MAP (navy → blue → cyan → yellow → red) ──
-function pressureToColour(val) {
-  const v = Math.max(1, Math.min(4095, val));
-  const t = (v - 1) / 4094;
+function pressureToColour(rawValue) {
+  const value = Number(rawValue) || 0;
+  if (value <= CONTACT_THRESHOLD) {
+    return NO_CONTACT_RGB;
+  }
+
+  const clamped = Math.max(CONTACT_THRESHOLD, Math.min(4095, value));
+  const normalized = (clamped - CONTACT_THRESHOLD) / (4095 - CONTACT_THRESHOLD);
+  const t = Math.pow(normalized, 0.85);
+
   // 5-stop colour ramp
   const stops = [
     [10, 22, 40],    // 0.0 navy (no contact)
@@ -321,13 +354,14 @@ function drawHeatmap(data32x32) {
   const canvas = document.getElementById('heatmapCanvas');
   const ctx = canvas.getContext('2d');
   const imgData = ctx.createImageData(32, 32);
-  const flat = data32x32.flat ? data32x32.flat() : data32x32;
+  const flat = data32x32?.flat ? data32x32.flat() : (data32x32 || []);
   for (let i = 0; i < 1024; i++) {
-    const [r, g, b] = pressureToColour(flat[i]);
+    const value = Number(flat[i]) || 0;
+    const [r, g, b] = pressureToColour(value);
     imgData.data[i * 4]     = r;
     imgData.data[i * 4 + 1] = g;
     imgData.data[i * 4 + 2] = b;
-    imgData.data[i * 4 + 3] = 255;
+    imgData.data[i * 4 + 3] = value <= CONTACT_THRESHOLD ? 220 : 255;
   }
   ctx.putImageData(imgData, 0, 0);
 }
@@ -336,10 +370,7 @@ function drawHeatmap(data32x32) {
 function updateHotZones(hotZones) {
   const overlay = document.getElementById('heatmapOverlay');
   overlay.innerHTML = '';
-  const container = document.querySelector('.heatmap-container');
-  const w = container.offsetWidth;
-  const h = container.offsetHeight;
-  hotZones.slice(0, 3).forEach(z => {
+  (hotZones || []).slice(0, 3).forEach(z => {
     const el = document.createElement('div');
     el.className = 'hotzone-marker';
     el.style.left = ((z.x + 0.5) / 32 * 100) + '%';
@@ -350,13 +381,25 @@ function updateHotZones(hotZones) {
 
 // ── UPDATE METRICS DISPLAY ──
 function updateMetrics(metrics) {
-  if (!metrics) return;
   const ppi  = document.getElementById('metricPPI');
   const area = document.getElementById('metricArea');
   const risk = document.getElementById('metricRisk');
   const asym = document.getElementById('metricAsym');
-  const badge= document.getElementById('riskBadge');
-  const expl = document.getElementById('explanationBox');
+  const badge = document.getElementById('riskBadge');
+  const expl  = document.getElementById('explanationBox');
+
+  if (!metrics) {
+    ppi.textContent = '—';
+    area.textContent = '—';
+    risk.textContent = '—';
+    asym.textContent = '—';
+    risk.className = 'metric-value';
+    badge.className = 'risk-badge low';
+    badge.textContent = 'No Data';
+    expl.textContent = 'No frame metrics available for this point in the session.';
+    updateHotZones([]);
+    return;
+  }
 
   ppi.textContent  = metrics.ppi?.toFixed(0) ?? '—';
   area.textContent = (metrics.contact_area?.toFixed(1) ?? '—') + '%';
@@ -376,43 +419,87 @@ function updateMetrics(metrics) {
     expl.textContent = metrics.plain_english;
   }
 
-  // Hot zones
-  if (metrics.hot_zones) {
-    updateHotZones(metrics.hot_zones);
+  updateHotZones(metrics.hot_zones || []);
+}
+
+function updateFrameWindowMeta(data) {
+  frameWindowMeta.totalFrames = Number.isInteger(data.total_frames) ? data.total_frames : (data.frames || []).length;
+  frameWindowMeta.returnedFrames = Number.isInteger(data.returned_frames) ? data.returned_frames : (data.frames || []).length;
+  frameWindowMeta.firstFrameIndex = data.first_frame_index;
+  frameWindowMeta.lastFrameIndex = data.last_frame_index;
+  frameWindowMeta.truncated = !!data.truncated;
+  frameWindowMeta.fullLoaded = !frameWindowMeta.truncated;
+
+  if ((frameWindowMeta.firstFrameIndex === null || frameWindowMeta.lastFrameIndex === null) && allFrames.length) {
+    frameWindowMeta.firstFrameIndex = allFrames[0].frame_index;
+    frameWindowMeta.lastFrameIndex = allFrames[allFrames.length - 1].frame_index;
   }
 }
 
+function renderFrameWindowInfo() {
+  const info = document.getElementById('frameWindowInfo');
+  const loadFullBtn = document.getElementById('loadFullFramesBtn');
+
+  if (!allFrames.length) {
+    info.textContent = 'No frames available for this session.';
+    loadFullBtn.style.display = 'none';
+    return;
+  }
+
+  if (frameWindowMeta.truncated && !frameWindowMeta.fullLoaded) {
+    info.textContent = `Showing latest ${frameWindowMeta.returnedFrames} of ${frameWindowMeta.totalFrames} frames (frame ${frameWindowMeta.firstFrameIndex} to ${frameWindowMeta.lastFrameIndex}).`;
+    loadFullBtn.style.display = 'inline-flex';
+  } else {
+    info.textContent = `Showing full session: ${frameWindowMeta.returnedFrames} frame${frameWindowMeta.returnedFrames === 1 ? '' : 's'}.`;
+    loadFullBtn.style.display = 'none';
+  }
+}
+
+function syncScrubberFromFrames() {
+  const scrubber = document.getElementById('frameScrubber');
+  scrubber.max = Math.max(0, allFrames.length - 1);
+  scrubber.value = Math.max(0, allFrames.length - 1);
+
+  if (allFrames.length > 0) {
+    const first = allFrames[0];
+    const last = allFrames[allFrames.length - 1];
+    document.getElementById('scrubberStart').textContent = new Date(first.timestamp).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    document.getElementById('scrubberEnd').textContent = new Date(last.timestamp).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  } else {
+    document.getElementById('scrubberStart').textContent = '—';
+    document.getElementById('scrubberEnd').textContent = '—';
+  }
+}
+
+function loadFullFrameHistory() {
+  if (!currentSessionId) return;
+  loadSession(currentSessionId, { full: true });
+}
+
 // ── LOAD SESSION FRAMES ──
-async function loadSession(sessionId) {
+async function loadSession(sessionId, options = {}) {
   currentSessionId = sessionId;
+  const loadFull = !!options.full;
+  const limitParam = loadFull ? 'all' : String(DEFAULT_FRAME_LIMIT);
+
   try {
-    const resp = await fetch(`/api/session/${sessionId}/frames/`);
-    const data = await resp.json();
-    allFrames = data.frames || [];
-
-    // Update scrubber
-    const scrubber = document.getElementById('frameScrubber');
-    scrubber.max = Math.max(0, allFrames.length - 1);
-    scrubber.value = allFrames.length - 1;
-
-    if (allFrames.length > 0) {
-      const first = allFrames[0];
-      const last  = allFrames[allFrames.length - 1];
-      document.getElementById('scrubberStart').textContent = new Date(first.timestamp).toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit'});
-      document.getElementById('scrubberEnd').textContent   = new Date(last.timestamp).toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit'});
+    const resp = await fetch(`/api/session/${sessionId}/frames/?limit=${encodeURIComponent(limitParam)}`);
+    if (!resp.ok) {
+      throw new Error(`Frame API ${resp.status}`);
     }
 
-    // Show latest frame
-    showFrame(allFrames.length - 1);
+    const data = await resp.json();
+    allFrames = data.frames || [];
+    updateFrameWindowMeta(data);
+    syncScrubberFromFrames();
+    renderFrameWindowInfo();
 
-    // Load chart
-    loadMetricsChart(sessionId);
-
-    // Load comments
-    loadComments(sessionId);
+    showFrame(Math.max(0, allFrames.length - 1));
+    await Promise.all([loadMetricsChart(sessionId), loadComments(sessionId)]);
 
   } catch (e) {
     console.error('Failed to load session:', e);
+    document.getElementById('frameWindowInfo').textContent = 'Failed to load frame data. Please retry.';
   }
 }
 
@@ -426,28 +513,30 @@ function showFrame(idx) {
   drawHeatmap(frame.data);
   updateMetrics(frame.metrics);
 
-  document.getElementById('frameNum').textContent = frame.frame_index;
+  document.getElementById('frameNum').textContent = frame.frame_index ?? '—';
 }
 
 // ── SCRUBBER ──
 document.getElementById('frameScrubber').addEventListener('input', function() {
-  showFrame(parseInt(this.value));
+  showFrame(parseInt(this.value, 10));
 });
 
 // ── SESSION SELECT ──
 document.getElementById('sessionSelect').addEventListener('change', function() {
-  loadSession(parseInt(this.value));
+  loadSession(parseInt(this.value, 10));
+  startPolling();
 });
 
 // ── METRICS CHART ──
 async function loadMetricsChart(sessionId) {
   const resp = await fetch(`/api/session/${sessionId}/metrics/`);
+  if (!resp.ok) return;
   const data = await resp.json();
   const timeline = data.timeline || [];
 
-  const labels = timeline.map((_, i) => `Frame ${i + 1}`);
-  const riskData = timeline.map(t => t.risk_score);
-  const ppiData  = timeline.map(t => (t.ppi / 4095 * 100).toFixed(1));
+  const labels = timeline.map(t => `Frame ${t.frame_index + 1}`);
+  const riskData = timeline.map(t => Number(t.risk_score ?? 0));
+  const ppiData  = timeline.map(t => Number((((t.ppi ?? 0) / 4095) * 100).toFixed(1)));
 
   if (metricsChart) metricsChart.destroy();
 
@@ -483,9 +572,15 @@ async function loadMetricsChart(sessionId) {
     options: {
       responsive: true,
       maintainAspectRatio: true,
+      animation: false,
       interaction: { mode: 'index', intersect: false },
       plugins: {
-        legend: { labels: { color: '#8fa8be', font: { size: 11 } } }
+        legend: { labels: { color: '#8fa8be', font: { size: 11 } } },
+        decimation: {
+          enabled: true,
+          algorithm: 'lttb',
+          samples: 700,
+        },
       },
       scales: {
         x: { ticks: { color: '#5a7a9a', font: { size: 9 }, maxTicksLimit: 8 }, grid: { color: 'rgba(255,255,255,0.04)' } },
@@ -497,9 +592,17 @@ async function loadMetricsChart(sessionId) {
 
 // ── COMMENTS ──
 async function loadComments(sessionId) {
-  const resp = await fetch(`/api/session/${sessionId}/comments/`);
-  const data = await resp.json();
-  renderComments(data.comments || []);
+  try {
+    const resp = await fetch(`/api/session/${sessionId}/comments/`);
+    if (!resp.ok) {
+      renderComments([]);
+      return;
+    }
+    const data = await resp.json();
+    renderComments(data.comments || []);
+  } catch (e) {
+    renderComments([]);
+  }
 }
 
 function renderComments(comments) {
@@ -531,7 +634,7 @@ function renderComments(comments) {
 }
 
 function escHtml(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
 async function submitComment() {
@@ -587,13 +690,30 @@ function startPolling() {
       const existingIdx = allFrames.findIndex(f => f.id === frame.id);
       if (existingIdx === -1) {
         allFrames.push(frame);
-        scrubber.max = allFrames.length - 1;
+
+        if (frameWindowMeta.truncated && !frameWindowMeta.fullLoaded) {
+          while (allFrames.length > frameWindowMeta.returnedFrames) {
+            allFrames.shift();
+          }
+        }
+
+        frameWindowMeta.totalFrames = Math.max(frameWindowMeta.totalFrames, (frame.frame_index ?? 0) + 1);
+        frameWindowMeta.returnedFrames = allFrames.length;
+        frameWindowMeta.firstFrameIndex = allFrames[0]?.frame_index ?? null;
+        frameWindowMeta.lastFrameIndex = allFrames[allFrames.length - 1]?.frame_index ?? null;
+
+        syncScrubberFromFrames();
+        renderFrameWindowInfo();
+
         if (isAtLatest) {
           scrubber.value = allFrames.length - 1;
           showFrame(allFrames.length - 1);
         }
-      } else if (isAtLatest) {
-        showFrame(allFrames.length - 1);
+      } else {
+        allFrames[existingIdx] = frame;
+        if (isAtLatest) {
+          showFrame(allFrames.length - 1);
+        }
       }
     } catch (e) {}
   }, 30000);
@@ -603,7 +723,6 @@ function stopPolling() {
   if (pollingInterval) { clearInterval(pollingInterval); pollingInterval = null; }
 }
 
-document.getElementById("sessionSelect").addEventListener("change", () => startPolling());
 if (currentSessionId) startPolling();
 </script>
 {% endblock %}

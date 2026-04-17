@@ -24,7 +24,9 @@ class LegacySuiteCompatibilityTests(TestCase):
             first_name="Dr",
             last_name="Legacy",
         )
-        UserProfile.objects.create(user=self.clinician, role="clinician")
+        clinician_profile = self.clinician.profile
+        clinician_profile.role = "clinician"
+        clinician_profile.save(update_fields=["role"])
 
         self.patient = User.objects.create_user(
             username="legacy_patient",
@@ -32,12 +34,11 @@ class LegacySuiteCompatibilityTests(TestCase):
             first_name="Legacy",
             last_name="Patient",
         )
-        UserProfile.objects.create(
-            user=self.patient,
-            role="patient",
-            assigned_clinician=self.clinician,
-            patient_id="LEGACY-001",
-        )
+        patient_profile = self.patient.profile
+        patient_profile.role = "patient"
+        patient_profile.assigned_clinician = self.clinician
+        patient_profile.patient_id = "LEGACY-001"
+        patient_profile.save(update_fields=["role", "assigned_clinician", "patient_id"])
 
         self.session = SensorSession.objects.create(
             patient=self.patient,
@@ -123,7 +124,10 @@ class LegacySuiteCompatibilityTests(TestCase):
 
     def test_patient_cannot_access_other_patient_session_frames(self):
         other_patient = User.objects.create_user(username="other_patient", password="patient123")
-        UserProfile.objects.create(user=other_patient, role="patient", assigned_clinician=self.clinician)
+        other_profile = other_patient.profile
+        other_profile.role = "patient"
+        other_profile.assigned_clinician = self.clinician
+        other_profile.save(update_fields=["role", "assigned_clinician"])
         other_session = SensorSession.objects.create(
             patient=other_patient,
             session_date=timezone.now().date(),
@@ -134,3 +138,33 @@ class LegacySuiteCompatibilityTests(TestCase):
         self.client.login(username="legacy_patient", password="patient123")
         forbidden = self.client.get(f"/api/session/{other_session.id}/frames/")
         self.assertEqual(forbidden.status_code, 403)
+
+    def test_clinician_cannot_access_unassigned_patient_frames_or_report(self):
+        other_clinician = User.objects.create_user(username="other_doc", password="clinic123")
+        other_clinician_profile = other_clinician.profile
+        other_clinician_profile.role = "clinician"
+        other_clinician_profile.save(update_fields=["role"])
+
+        unassigned_patient = User.objects.create_user(
+            username="outside_patient",
+            password="patient123",
+        )
+        unassigned_profile = unassigned_patient.profile
+        unassigned_profile.role = "patient"
+        unassigned_profile.assigned_clinician = other_clinician
+        unassigned_profile.save(update_fields=["role", "assigned_clinician"])
+
+        outside_session = SensorSession.objects.create(
+            patient=unassigned_patient,
+            session_date=timezone.now().date(),
+            start_time=timezone.now() - timedelta(minutes=2),
+        )
+        self._create_analysed_frame(outside_session, frame_index=0, pressure=2300)
+
+        self.client.login(username="dr_legacy", password="clinic123")
+
+        frames_forbidden = self.client.get(f"/api/session/{outside_session.id}/frames/")
+        self.assertEqual(frames_forbidden.status_code, 403)
+
+        report_forbidden = self.client.get(f"/report/{unassigned_patient.id}/")
+        self.assertEqual(report_forbidden.status_code, 403)
