@@ -97,6 +97,8 @@ python manage.py runserver
   - python manage.py load_sample_data
 - Import bundled real CSV session:
   - python manage.py import_real_csv --path sample_data/de0e9b2c_20251013.csv
+- Generate large synthetic/noisy preview datasets:
+  - python manage.py generate_garbage_data --patients 20 --sessions 6 --frames 90 --comments 4
 
 ## Validation Commands
 
