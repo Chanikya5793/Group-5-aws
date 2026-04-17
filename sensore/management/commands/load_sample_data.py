@@ -3,17 +3,19 @@ Management command to populate the database with realistic sample sensor data.
 Creates 5 patients, 1 clinician, 1 admin, with 3 sessions each.
 """
 import json
-import random
 import math
-from datetime import datetime, timedelta, date
-from django.core.management.base import BaseCommand
-from django.contrib.auth.models import User
-from django.utils import timezone
+import random
+from datetime import date, datetime, timedelta
+
 import numpy as np
+from django.contrib.auth.models import User
+from django.core.management.base import BaseCommand
+from django.utils import timezone
 
 from accounts.models import UserProfile
-from sensore.models import SensorSession, SensorFrame, PressureAlert
-from sensore.utils import analyse_frame
+from sensore.models import SensorFrame, SensorSession
+from sensore.utils import (analyse_frame, generate_session_alerts,
+                           parse_frame_data)
 
 
 class Command(BaseCommand):
@@ -116,23 +118,22 @@ class Command(BaseCommand):
 
         SensorFrame.objects.bulk_create(frames_to_create, ignore_conflicts=True)
 
-        # Run analysis on each frame
-        for frame in session.frames.all():
-            metrics = analyse_frame(frame)
+        # Run sequential analysis so movement and sustained-load metrics are accurate.
+        sustained_streak = 0
+        previous_matrix = None
+        for frame in session.frames.order_by('frame_index'):
+            metrics = analyse_frame(
+                frame,
+                previous_matrix=previous_matrix,
+                sustained_streak=sustained_streak,
+            )
+            previous_matrix = parse_frame_data(frame.data)
+            if metrics.risk_score >= 60 or metrics.peak_pressure_index >= 2800:
+                sustained_streak += 1
+            else:
+                sustained_streak = 0
 
-            # Create alert if high risk
-            if metrics.risk_level in ('high', 'critical') and random.random() < 0.5:
-                PressureAlert.objects.get_or_create(
-                    session=session,
-                    frame=frame,
-                    defaults={
-                        'alert_type': 'high_ppi' if metrics.peak_pressure_index > 2800 else 'sustained',
-                        'message': f"{'Critical' if metrics.risk_level == 'critical' else 'High'} pressure detected "
-                                   f"(PPI: {metrics.peak_pressure_index:.0f}, Risk: {metrics.risk_score:.0f}/100). "
-                                   f"Consider repositioning.",
-                        'risk_score': metrics.risk_score,
-                    }
-                )
+        generate_session_alerts(session, recreate_unacknowledged=True)
 
     def _generate_sitting_pattern(self):
         """Generate a base 32x32 sitting pressure pattern (two pressure zones)."""

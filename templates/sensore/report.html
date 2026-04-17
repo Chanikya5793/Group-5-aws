@@ -14,10 +14,18 @@
     margin-top: 4px;
   }
   .report-actions { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
+  .report-filters {
+    margin-bottom: 1rem;
+    display: flex;
+    gap: 0.6rem;
+    align-items: flex-end;
+    flex-wrap: wrap;
+  }
+  .report-filters .form-group { min-width: 170px; }
 
   /* SUMMARY CARDS */
   .summary-grid {
-    display: grid; grid-template-columns: repeat(5, 1fr); gap: 1rem;
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem;
     margin-bottom: 1.5rem;
   }
   .summary-card {
@@ -87,10 +95,10 @@
     .card, .session-row, .summary-card { background: white; border-color: #ddd; }
   }
   @media (max-width: 800px) {
-    .summary-grid { grid-template-columns: repeat(3, 1fr); }
+    .summary-grid { grid-template-columns: repeat(2, 1fr); }
   }
   @media (max-width: 500px) {
-    .summary-grid { grid-template-columns: 1fr 1fr; }
+    .summary-grid { grid-template-columns: 1fr; }
   }
 </style>
 {% endblock %}
@@ -112,12 +120,28 @@
       </div>
     </div>
     <div class="report-actions">
-      <a href="?download=1" class="btn btn-primary">
+      <a href="?download=1{% if start_date %}&start_date={{ start_date|date:'Y-m-d' }}{% endif %}{% if end_date %}&end_date={{ end_date|date:'Y-m-d' }}{% endif %}" class="btn btn-primary">
         ⬇ Download PDF
+      </a>
+      <a href="?download=csv{% if start_date %}&start_date={{ start_date|date:'Y-m-d' }}{% endif %}{% if end_date %}&end_date={{ end_date|date:'Y-m-d' }}{% endif %}" class="btn btn-secondary">
+        Download CSV
       </a>
       <button class="btn btn-secondary" onclick="window.print()">🖨 Print</button>
     </div>
   </div>
+
+  <form method="get" class="report-filters">
+    <div class="form-group">
+      <label class="form-label" for="startDate">From Date</label>
+      <input id="startDate" class="form-control" type="date" name="start_date" value="{% if start_date %}{{ start_date|date:'Y-m-d' }}{% endif %}" />
+    </div>
+    <div class="form-group">
+      <label class="form-label" for="endDate">To Date</label>
+      <input id="endDate" class="form-control" type="date" name="end_date" value="{% if end_date %}{{ end_date|date:'Y-m-d' }}{% endif %}" />
+    </div>
+    <button class="btn btn-primary" type="submit">Apply Range</button>
+    <a class="btn btn-secondary" href="?">Clear</a>
+  </form>
 
   <!-- SUMMARY STATS -->
   <div class="summary-grid">
@@ -146,12 +170,40 @@
       <div class="s-val {% if total_high_risk > 0 %}text-danger{% else %}text-success{% endif %}">{{ total_high_risk }}</div>
       <div class="s-sub">Across all sessions</div>
     </div>
+    <div class="summary-card">
+      <div class="s-lbl">Avg Movement</div>
+      <div class="s-val">{{ avg_movement }}<span style="font-size:1rem">%</span></div>
+      <div class="s-sub">Frame-to-frame change</div>
+    </div>
+    <div class="summary-card">
+      <div class="s-lbl">Avg Variability</div>
+      <div class="s-val">{{ avg_variability }}<span style="font-size:1rem">%</span></div>
+      <div class="s-sub">Pressure spread</div>
+    </div>
+    <div class="summary-card">
+      <div class="s-lbl">Trend</div>
+      <div class="s-val" style="font-size:1.15rem">{{ overall_trend|capfirst }}</div>
+      <div class="s-sub">Session-level direction</div>
+    </div>
+    <div class="summary-card">
+      <div class="s-lbl">Coverage</div>
+      <div class="s-val" style="font-size:1.25rem">{{ total_sessions }} sessions</div>
+      <div class="s-sub">{{ total_frames }} analysed frames</div>
+    </div>
   </div>
 
   <!-- SESSION HISTORY -->
   <div class="card-title mb-1" style="font-size:0.78rem;color:var(--teal);font-family:var(--font-mono);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.75rem">
     Session History ({{ session_summaries|length }} session{{ session_summaries|pluralize }})
   </div>
+  {% if start_date or end_date %}
+  <div class="text-muted" style="font-size:0.82rem;margin-bottom:0.75rem">
+    Date filter:
+    {% if start_date %}from {{ start_date|date:"d M Y" }}{% else %}from earliest{% endif %}
+    to
+    {% if end_date %}{{ end_date|date:"d M Y" }}{% else %}latest{% endif %}
+  </div>
+  {% endif %}
 
   {% for ss in session_summaries %}
   {% with d=ss.data s=ss.session %}
@@ -177,6 +229,14 @@
         <div class="session-m">
           <div class="v">{{ d.avg_risk_score }}</div>
           <div class="l">Risk</div>
+        </div>
+        <div class="session-m">
+          <div class="v">{{ d.high_risk_ratio }}%</div>
+          <div class="l">High-Risk</div>
+        </div>
+        <div class="session-m">
+          <div class="v">{{ d.risk_trend|capfirst }}</div>
+          <div class="l">Trend</div>
         </div>
         <span class="risk-badge {{ d.peak_risk_level }}">{{ d.peak_risk_level|capfirst }}</span>
         <span class="text-muted" style="font-size:0.9rem">▾</span>
@@ -204,6 +264,21 @@
       </div>
       {% endif %}
       {% endwith %}
+
+      <div class="grid-3" style="gap:0.6rem;margin-bottom:1rem">
+        <div class="summary-card" style="padding:0.7rem 0.8rem;text-align:left">
+          <div class="s-lbl">Avg Movement</div>
+          <div class="s-val" style="font-size:1.2rem">{{ d.avg_movement_index }}%</div>
+        </div>
+        <div class="summary-card" style="padding:0.7rem 0.8rem;text-align:left">
+          <div class="s-lbl">Avg Variability</div>
+          <div class="s-val" style="font-size:1.2rem">{{ d.avg_pressure_variability }}%</div>
+        </div>
+        <div class="summary-card" style="padding:0.7rem 0.8rem;text-align:left">
+          <div class="s-lbl">Max Sustained Load</div>
+          <div class="s-val" style="font-size:1.2rem">{{ d.max_sustained_load }}%</div>
+        </div>
+      </div>
 
       <!-- Comments for this session -->
       {% with comments=s.comments.all %}

@@ -1,6 +1,7 @@
-from django.db import models
-from django.contrib.auth.models import User
 import json
+
+from django.contrib.auth.models import User
+from django.db import models
 
 
 class SensorSession(models.Model):
@@ -69,6 +70,12 @@ class PressureMetrics(models.Model):
     contact_area_percent = models.FloatField()       # % of pixels above lower threshold
     average_pressure = models.FloatField()
     asymmetry_score = models.FloatField(default=0.0)  # Left/right imbalance 0-100
+    pressure_variability = models.FloatField(default=0.0)  # Coefficient of variation of in-contact pressure
+    pressure_concentration = models.FloatField(default=0.0)  # 0-100 localised load intensity index
+    movement_index = models.FloatField(default=0.0)  # Frame-to-frame movement intensity 0-100
+    sustained_load_index = models.FloatField(default=0.0)  # Persistence of high load over recent frames 0-100
+    center_of_pressure_x = models.FloatField(null=True, blank=True)  # 0-31 x-axis
+    center_of_pressure_y = models.FloatField(null=True, blank=True)  # 0-31 y-axis
     risk_level = models.CharField(max_length=20, choices=RISK_LEVELS, default='low')
     risk_score = models.FloatField(default=0.0)      # 0-100 composite score
     hot_zones = models.TextField(default='[]')       # JSON: list of {x, y, value} high-pressure pixels

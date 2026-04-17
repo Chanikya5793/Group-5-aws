@@ -20,17 +20,17 @@ What this command does:
 """
 import json
 import os
-from datetime import datetime, timedelta, date
+from datetime import date, datetime, timedelta
 
-from django.core.management.base import BaseCommand
-from django.contrib.auth.models import User
-from django.utils import timezone
 from django.conf import settings
+from django.contrib.auth.models import User
+from django.core.management.base import BaseCommand
+from django.utils import timezone
 
 from accounts.models import UserProfile
-from sensore.models import SensorSession, SensorFrame, PressureAlert
-from sensore.utils import analyse_frame, normalise_frame
-
+from sensore.models import SensorFrame, SensorSession
+from sensore.utils import (analyse_frame, generate_session_alerts,
+                           normalise_frame, parse_frame_data)
 
 CSV_FILENAME = 'de0e9b2c_20251013.csv'
 PATIENT_USERNAME = 'de0e9b2c'
@@ -204,33 +204,26 @@ class Command(BaseCommand):
         self.stdout.write('  Running pressure analysis (this may take a minute) …')
         batch = options['batch_size']
         all_frames = list(session.frames.order_by('frame_index'))
-        alerts_created = 0
         high_risk = 0
+        sustained_streak = 0
+        previous_matrix = None
 
         for i, frame in enumerate(all_frames):
             try:
-                metrics = analyse_frame(frame)
+                metrics = analyse_frame(
+                    frame,
+                    previous_matrix=previous_matrix,
+                    sustained_streak=sustained_streak,
+                )
+
+                previous_matrix = parse_frame_data(frame.data)
+                if metrics.risk_score >= 60 or metrics.peak_pressure_index >= 2800:
+                    sustained_streak += 1
+                else:
+                    sustained_streak = 0
 
                 if metrics.risk_level in ('high', 'critical'):
                     high_risk += 1
-                    alert, new = PressureAlert.objects.get_or_create(
-                        session=session,
-                        frame=frame,
-                        defaults={
-                            'alert_type': (
-                                'critical' if metrics.risk_level == 'critical' else 'high_ppi'
-                            ),
-                            'message': (
-                                f"{metrics.risk_level.capitalize()} pressure detected — "
-                                f"PPI: {metrics.peak_pressure_index:.0f}, "
-                                f"Risk: {metrics.risk_score:.0f}/100. "
-                                "Consider repositioning."
-                            ),
-                            'risk_score': metrics.risk_score,
-                        }
-                    )
-                    if new:
-                        alerts_created += 1
 
             except Exception as e:
                 self.stderr.write(f'  Frame {i} analysis error: {e}')
@@ -238,6 +231,8 @@ class Command(BaseCommand):
             if (i + 1) % batch == 0:
                 pct = (i + 1) / len(all_frames) * 100
                 self.stdout.write(f'    … {i+1}/{len(all_frames)} frames ({pct:.0f}%)')
+
+        alerts_created = generate_session_alerts(session, recreate_unacknowledged=True)
 
         # ── Done ────────────────────────────────────────────────────────
         self.stdout.write(self.style.SUCCESS(

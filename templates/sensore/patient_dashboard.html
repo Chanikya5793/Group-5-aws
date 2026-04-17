@@ -133,6 +133,50 @@
     0%,100%{ box-shadow: 0 0 0 0 rgba(255,69,0,0.6); }
     50%{ box-shadow: 0 0 0 5px rgba(255,69,0,0); }
   }
+
+  .cop-marker {
+    position: absolute;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: rgba(0, 212, 200, 0.95);
+    border: 2px solid rgba(255, 255, 255, 0.75);
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    box-shadow: 0 0 0 4px rgba(0, 212, 200, 0.18);
+  }
+
+  .cop-trail-point {
+    position: absolute;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: rgba(0, 212, 200, 0.55);
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+  }
+
+  .comment-anchor-info {
+    font-size: 0.72rem;
+    color: var(--mist);
+    margin-top: 4px;
+    font-family: var(--font-mono);
+  }
+
+  .comment-jump-btn {
+    margin-left: 8px;
+    font-size: 0.68rem;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid rgba(0, 212, 200, 0.25);
+    background: rgba(0, 212, 200, 0.1);
+    color: var(--teal);
+    cursor: pointer;
+  }
+
+  .comment-jump-btn:hover {
+    background: rgba(0, 212, 200, 0.2);
+  }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 {% endblock %}
@@ -147,6 +191,8 @@
       <p>Real-time sitting position analysis · Sensore Mat</p>
     </div>
     <div class="session-select-wrap">
+      <a class="btn btn-secondary btn-sm" href="/report/" target="_blank">View Report</a>
+      <a class="btn btn-primary btn-sm" href="/report/?download=1">Download PDF</a>
       <label class="form-label" style="margin:0">Session:</label>
       <select class="form-control" id="sessionSelect" style="width:auto; min-width:210px">
         {% for s in sessions %}
@@ -256,7 +302,28 @@
               <div class="metric-value" id="metricAsym">—</div>
               <div class="metric-sub">% left/right imbalance</div>
             </div>
+            <div class="metric-block">
+              <div class="metric-label">Movement</div>
+              <div class="metric-value" id="metricMove">—</div>
+              <div class="metric-sub">frame-to-frame change</div>
+            </div>
+            <div class="metric-block">
+              <div class="metric-label">Concentration</div>
+              <div class="metric-value" id="metricConc">—</div>
+              <div class="metric-sub">localized pressure index</div>
+            </div>
+            <div class="metric-block">
+              <div class="metric-label">Variability</div>
+              <div class="metric-value" id="metricVar">—</div>
+              <div class="metric-sub">in-contact pressure spread</div>
+            </div>
+            <div class="metric-block">
+              <div class="metric-label">Sustained Load</div>
+              <div class="metric-value" id="metricSustain">—</div>
+              <div class="metric-sub">persistence across frames</div>
+            </div>
           </div>
+          <div class="comment-anchor-info" id="metricCop">Center of pressure: —</div>
         </div>
       </div>
 
@@ -281,6 +348,7 @@
           <!-- Add comment form -->
           <div class="form-group">
             <textarea id="commentText" class="form-control" placeholder="Add a note about your current position or how you're feeling..."></textarea>
+            <div id="commentAnchorInfo" class="comment-anchor-info">Your note will be linked to the selected frame timestamp.</div>
           </div>
           <button class="btn btn-primary btn-sm" onclick="submitComment()" style="align-self:flex-start">
             Add Note
@@ -309,6 +377,9 @@ let metricsChart = null;
 const CONTACT_THRESHOLD = 100;
 const DEFAULT_FRAME_LIMIT = 1200;
 const NO_CONTACT_RGB = [6, 12, 24];
+const CENTER_TRAIL_LENGTH = 10;
+
+let centerTrail = [];
 
 let frameWindowMeta = {
   totalFrames: 0,
@@ -367,9 +438,20 @@ function drawHeatmap(data32x32) {
 }
 
 // ── UPDATE HOT ZONE MARKERS ──
-function updateHotZones(hotZones) {
+function updateHotZones(hotZones, metrics) {
   const overlay = document.getElementById('heatmapOverlay');
   overlay.innerHTML = '';
+
+  // Draw short trail first so it sits under current center marker.
+  centerTrail.forEach((point, index) => {
+    const trail = document.createElement('div');
+    trail.className = 'cop-trail-point';
+    trail.style.left = ((point.x + 0.5) / 32 * 100) + '%';
+    trail.style.top = ((point.y + 0.5) / 32 * 100) + '%';
+    trail.style.opacity = String((index + 1) / centerTrail.length);
+    overlay.appendChild(trail);
+  });
+
   (hotZones || []).slice(0, 3).forEach(z => {
     const el = document.createElement('div');
     el.className = 'hotzone-marker';
@@ -377,6 +459,16 @@ function updateHotZones(hotZones) {
     el.style.top  = ((z.y + 0.5) / 32 * 100) + '%';
     overlay.appendChild(el);
   });
+
+  const copX = metrics?.center_of_pressure_x;
+  const copY = metrics?.center_of_pressure_y;
+  if (Number.isFinite(copX) && Number.isFinite(copY)) {
+    const marker = document.createElement('div');
+    marker.className = 'cop-marker';
+    marker.style.left = ((copX + 0.5) / 32 * 100) + '%';
+    marker.style.top = ((copY + 0.5) / 32 * 100) + '%';
+    overlay.appendChild(marker);
+  }
 }
 
 // ── UPDATE METRICS DISPLAY ──
@@ -385,6 +477,11 @@ function updateMetrics(metrics) {
   const area = document.getElementById('metricArea');
   const risk = document.getElementById('metricRisk');
   const asym = document.getElementById('metricAsym');
+  const move = document.getElementById('metricMove');
+  const conc = document.getElementById('metricConc');
+  const vari = document.getElementById('metricVar');
+  const sustain = document.getElementById('metricSustain');
+  const cop = document.getElementById('metricCop');
   const badge = document.getElementById('riskBadge');
   const expl  = document.getElementById('explanationBox');
 
@@ -393,11 +490,17 @@ function updateMetrics(metrics) {
     area.textContent = '—';
     risk.textContent = '—';
     asym.textContent = '—';
+    move.textContent = '—';
+    conc.textContent = '—';
+    vari.textContent = '—';
+    sustain.textContent = '—';
+    cop.textContent = 'Center of pressure: —';
     risk.className = 'metric-value';
     badge.className = 'risk-badge low';
     badge.textContent = 'No Data';
     expl.textContent = 'No frame metrics available for this point in the session.';
-    updateHotZones([]);
+    centerTrail = [];
+    updateHotZones([], null);
     return;
   }
 
@@ -405,6 +508,10 @@ function updateMetrics(metrics) {
   area.textContent = (metrics.contact_area?.toFixed(1) ?? '—') + '%';
   risk.textContent = metrics.risk_score?.toFixed(0) ?? '—';
   asym.textContent = (metrics.asymmetry?.toFixed(1) ?? '—') + '%';
+  move.textContent = (metrics.movement_index?.toFixed(1) ?? '—') + '%';
+  conc.textContent = (metrics.pressure_concentration?.toFixed(1) ?? '—') + '%';
+  vari.textContent = (metrics.pressure_variability?.toFixed(1) ?? '—') + '%';
+  sustain.textContent = (metrics.sustained_load_index?.toFixed(0) ?? '—') + '%';
 
   // Colour code metric values
   const rl = metrics.risk_level || 'low';
@@ -419,7 +526,50 @@ function updateMetrics(metrics) {
     expl.textContent = metrics.plain_english;
   }
 
-  updateHotZones(metrics.hot_zones || []);
+  const copX = metrics.center_of_pressure_x;
+  const copY = metrics.center_of_pressure_y;
+  if (Number.isFinite(copX) && Number.isFinite(copY)) {
+    const horiz = copX < 13 ? 'left' : (copX > 19 ? 'right' : 'center');
+    const vert = copY < 11 ? 'front' : (copY > 21 ? 'rear' : 'middle');
+    cop.textContent = `Center of pressure: ${vert}-${horiz} (x ${copX.toFixed(1)}, y ${copY.toFixed(1)})`;
+  } else {
+    cop.textContent = 'Center of pressure: not enough contact data';
+  }
+
+  updateHotZones(metrics.hot_zones || [], metrics);
+}
+
+function updateCenterTrail(metrics) {
+  const copX = metrics?.center_of_pressure_x;
+  const copY = metrics?.center_of_pressure_y;
+
+  if (!Number.isFinite(copX) || !Number.isFinite(copY)) {
+    centerTrail = [];
+    return;
+  }
+
+  centerTrail.push({ x: copX, y: copY });
+  if (centerTrail.length > CENTER_TRAIL_LENGTH) {
+    centerTrail = centerTrail.slice(centerTrail.length - CENTER_TRAIL_LENGTH);
+  }
+}
+
+function updateCommentAnchorInfo(frame) {
+  const anchor = document.getElementById('commentAnchorInfo');
+  if (!anchor) return;
+
+  if (!frame) {
+    anchor.textContent = 'Your note will be linked to your current time.';
+    return;
+  }
+
+  const timeLabel = new Date(frame.timestamp).toLocaleString('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  anchor.textContent = `Next note anchor: Frame ${frame.frame_index} at ${timeLabel}`;
 }
 
 function updateFrameWindowMeta(data) {
@@ -468,6 +618,7 @@ function syncScrubberFromFrames() {
   } else {
     document.getElementById('scrubberStart').textContent = '—';
     document.getElementById('scrubberEnd').textContent = '—';
+    updateCommentAnchorInfo(null);
   }
 }
 
@@ -479,6 +630,7 @@ function loadFullFrameHistory() {
 // ── LOAD SESSION FRAMES ──
 async function loadSession(sessionId, options = {}) {
   currentSessionId = sessionId;
+  centerTrail = [];
   const loadFull = !!options.full;
   const limitParam = loadFull ? 'all' : String(DEFAULT_FRAME_LIMIT);
 
@@ -494,7 +646,15 @@ async function loadSession(sessionId, options = {}) {
     syncScrubberFromFrames();
     renderFrameWindowInfo();
 
-    showFrame(Math.max(0, allFrames.length - 1));
+    if (allFrames.length) {
+      showFrame(Math.max(0, allFrames.length - 1));
+    } else {
+      centerTrail = [];
+      drawHeatmap(new Array(1024).fill(0));
+      updateMetrics(null);
+      updateCommentAnchorInfo(null);
+    }
+
     await Promise.all([loadMetricsChart(sessionId), loadComments(sessionId)]);
 
   } catch (e) {
@@ -506,12 +666,20 @@ async function loadSession(sessionId, options = {}) {
 // ── SHOW SPECIFIC FRAME ──
 function showFrame(idx) {
   if (!allFrames.length) return;
+  const previousIndex = currentFrameIndex;
   idx = Math.max(0, Math.min(idx, allFrames.length - 1));
+
+  if (Math.abs(idx - previousIndex) > 1) {
+    centerTrail = [];
+  }
+
   currentFrameIndex = idx;
   const frame = allFrames[idx];
 
   drawHeatmap(frame.data);
+  updateCenterTrail(frame.metrics);
   updateMetrics(frame.metrics);
+  updateCommentAnchorInfo(frame);
 
   document.getElementById('frameNum').textContent = frame.frame_index ?? '—';
 }
@@ -537,6 +705,7 @@ async function loadMetricsChart(sessionId) {
   const labels = timeline.map(t => `Frame ${t.frame_index + 1}`);
   const riskData = timeline.map(t => Number(t.risk_score ?? 0));
   const ppiData  = timeline.map(t => Number((((t.ppi ?? 0) / 4095) * 100).toFixed(1)));
+  const movementData = timeline.map(t => Number(t.movement_index ?? 0));
 
   if (metricsChart) metricsChart.destroy();
 
@@ -566,6 +735,16 @@ async function loadMetricsChart(sessionId) {
           pointRadius: 0,
           borderWidth: 1.5,
           borderDash: [4, 3],
+        },
+        {
+          label: 'Movement %',
+          data: movementData,
+          borderColor: '#8fa8be',
+          backgroundColor: 'transparent',
+          fill: false,
+          tension: 0.25,
+          pointRadius: 0,
+          borderWidth: 1.2,
         }
       ]
     },
@@ -618,7 +797,11 @@ function renderComments(comments) {
         <span class="comment-time">${new Date(c.created_at).toLocaleString('en-GB',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</span>
       </div>
       <div class="comment-text">${escHtml(c.text)}</div>
-      <div class="comment-ts">📍 Ref: ${new Date(c.timestamp).toLocaleString('en-GB',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'short'})}</div>
+      <div class="comment-ts">
+        Ref: ${new Date(c.timestamp).toLocaleString('en-GB',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'short'})}
+        ${Number.isInteger(c.frame_index) ? `(frame ${c.frame_index})` : ''}
+        ${c.frame_id ? `<button class="comment-jump-btn" onclick="jumpToFrame(${c.frame_id})" type="button">Jump to frame</button>` : ''}
+      </div>
       ${c.replies?.length ? `
         <div class="comment-replies">
           ${c.replies.map(r => `
@@ -631,6 +814,38 @@ function renderComments(comments) {
       ` : ''}
     </div>
   `).join('');
+}
+
+async function jumpToFrame(frameId) {
+  if (!frameId) return;
+
+  let idx = allFrames.findIndex(f => f.id === frameId);
+
+  if (idx === -1) {
+    try {
+      const resp = await fetch(`/api/frame/${frameId}/`);
+      if (!resp.ok) return;
+      const frame = await resp.json();
+      if (!frame?.id) return;
+
+      const exists = allFrames.some(f => f.id === frame.id);
+      if (!exists) {
+        allFrames.push(frame);
+        allFrames.sort((a, b) => (a.frame_index ?? 0) - (b.frame_index ?? 0));
+        syncScrubberFromFrames();
+        renderFrameWindowInfo();
+      }
+
+      idx = allFrames.findIndex(f => f.id === frameId);
+    } catch (e) {
+      return;
+    }
+  }
+
+  if (idx >= 0) {
+    document.getElementById('frameScrubber').value = idx;
+    showFrame(idx);
+  }
 }
 
 function escHtml(s) {
@@ -716,7 +931,7 @@ function startPolling() {
         }
       }
     } catch (e) {}
-  }, 30000);
+  }, 8000);
 }
 
 function stopPolling() {

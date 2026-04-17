@@ -22,21 +22,21 @@ Filename convention (auto-parsed for session date):
 import csv
 import io
 import json
-import re
 import os
-from datetime import datetime, date
+import re
+from datetime import date, datetime
 
-from django.shortcuts import render, redirect
-from django.contrib.auth.decorators import login_required
 from django.contrib import messages
-from django.utils import timezone
+from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
+from django.shortcuts import redirect, render
+from django.utils import timezone
 
-from sensore.models import SensorSession, SensorFrame
-from sensore.utils import analyse_frame, normalise_frame
-from sensore.views import get_user_role
 from accounts.models import UserProfile
-
+from sensore.models import SensorFrame, SensorSession
+from sensore.utils import (analyse_frame, generate_session_alerts,
+                           normalise_frame, parse_frame_data)
+from sensore.views import get_user_role
 
 # ── FILENAME HINT PARSER ─────────────────────────────────────────────────────
 
@@ -195,19 +195,35 @@ def upload_csv(request):
             ))
         SensorFrame.objects.bulk_create(frame_objs)
 
-        # Run pressure analysis
+        # Run pressure analysis with sequential context (movement + sustained load)
         analysed = 0
-        for frame in session.frames.all():
+        sustained_streak = 0
+        previous_matrix = None
+        for frame in session.frames.order_by('frame_index'):
             try:
-                analyse_frame(frame)
+                metrics = analyse_frame(
+                    frame,
+                    previous_matrix=previous_matrix,
+                    sustained_streak=sustained_streak,
+                )
                 analysed += 1
+
+                previous_matrix = parse_frame_data(frame.data)
+                if metrics.risk_score >= 60 or metrics.peak_pressure_index >= 2800:
+                    sustained_streak += 1
+                else:
+                    sustained_streak = 0
             except Exception:
+                previous_matrix = None
                 pass
+
+        alerts_created = generate_session_alerts(session, recreate_unacknowledged=True)
 
         messages.success(
             request,
             f'Imported {len(frames_data)} frames from "{csv_file.name}" '
-            f'(date: {session_date}). Analysis complete for {analysed} frames.'
+            f'(date: {session_date}). Analysis complete for {analysed} frames. '
+            f'Generated {alerts_created} active alert(s).'
         )
         return redirect('patient_dashboard')
 

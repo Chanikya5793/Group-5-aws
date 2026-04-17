@@ -134,6 +134,9 @@
           <div class="patient-meta">
             {% if ps.latest_session %}
               <span>📅 Last session: {{ ps.latest_session.session_date }}</span>
+              <span>Risk score: {{ ps.latest_risk_score|floatformat:0 }}/100</span>
+              <span>High-risk frames: {{ ps.latest_high_risk_ratio|floatformat:0 }}%</span>
+              <span>Trend: {{ ps.latest_session_trend|capfirst }}</span>
             {% else %}
               <span>No sessions yet</span>
             {% endif %}
@@ -255,6 +258,9 @@ async function openPatientDetail(patientId, name) {
     <tr>
       <td class="mono" style="font-size:0.8rem">${s.date}</td>
       <td>${s.frame_count} frames</td>
+      <td>${Number(s.avg_risk_score || 0).toFixed(0)}/100</td>
+      <td>${Number(s.high_risk_ratio || 0).toFixed(0)}%</td>
+      <td>${escHtml(s.risk_trend || 'stable')}</td>
       <td>${s.flagged ? '<span style="color:var(--amber)">⚑ Flagged</span>' : '<span style="color:var(--green)">Clear</span>'}</td>
       <td>
         <button class="btn btn-sm btn-secondary" onclick="loadSessionDetail(${s.id})">View Heatmap</button>
@@ -267,7 +273,7 @@ async function openPatientDetail(patientId, name) {
       <div>
         <div class="card-title mb-1" style="font-size:0.75rem;color:var(--teal);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.5rem">Sessions</div>
         <table class="alert-table" style="width:100%">
-          <thead><tr><th>Date</th><th>Frames</th><th>Status</th><th>Actions</th></tr></thead>
+          <thead><tr><th>Date</th><th>Frames</th><th>Avg Risk</th><th>High-Risk</th><th>Trend</th><th>Status</th><th>Actions</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>

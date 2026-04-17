@@ -1,3 +1,4 @@
+import csv
 import io
 import json
 from datetime import datetime
@@ -50,6 +51,46 @@ def patient_access_error(user, patient):
     if user_can_access_patient(user, patient):
         return None
     return JsonResponse({'error': 'Forbidden'}, status=403)
+
+
+def _parse_iso_date(date_str):
+    """Parse YYYY-MM-DD date strings safely; return None on invalid values."""
+    if not date_str:
+        return None
+    try:
+        return datetime.strptime(date_str, '%Y-%m-%d').date()
+    except ValueError:
+        return None
+
+
+def _serialize_frame_payload(frame):
+    payload = {
+        'id': frame.id,
+        'frame_index': frame.frame_index,
+        'timestamp': frame.timestamp.isoformat(),
+        'data': json.loads(frame.data),
+    }
+
+    if hasattr(frame, 'metrics'):
+        m = frame.metrics
+        payload['metrics'] = {
+            'ppi': m.peak_pressure_index,
+            'contact_area': m.contact_area_percent,
+            'avg_pressure': m.average_pressure,
+            'asymmetry': m.asymmetry_score,
+            'pressure_variability': m.pressure_variability,
+            'pressure_concentration': m.pressure_concentration,
+            'movement_index': m.movement_index,
+            'sustained_load_index': m.sustained_load_index,
+            'center_of_pressure_x': m.center_of_pressure_x,
+            'center_of_pressure_y': m.center_of_pressure_y,
+            'risk_score': m.risk_score,
+            'risk_level': m.risk_level,
+            'hot_zones': m.get_hot_zones(),
+            'plain_english': m.plain_english,
+        }
+
+    return payload
 
 
 @login_required
@@ -107,16 +148,34 @@ def clinician_dashboard(request):
         latest_session = SensorSession.objects.filter(patient=patient).order_by('-start_time').first()
         unack_alerts = PressureAlert.objects.filter(session__patient=patient, acknowledged=False).count()
         latest_risk = 'unknown'
+        latest_risk_score = 0.0
+        latest_high_risk_ratio = 0.0
+        latest_session_trend = 'stable'
         if latest_session:
             latest_frame = latest_session.frames.order_by('-timestamp').first()
             if latest_frame and hasattr(latest_frame, 'metrics'):
                 latest_risk = latest_frame.metrics.risk_level
+                latest_risk_score = latest_frame.metrics.risk_score
+
+            latest_session_data = generate_session_report_data(latest_session)
+            if latest_session_data:
+                latest_high_risk_ratio = latest_session_data.get('high_risk_ratio', 0.0)
+                latest_session_trend = latest_session_data.get('risk_trend', 'stable')
+
         patient_summaries.append({
             'user': patient,
             'latest_session': latest_session,
             'unack_alerts': unack_alerts,
             'latest_risk': latest_risk,
+            'latest_risk_score': latest_risk_score,
+            'latest_high_risk_ratio': latest_high_risk_ratio,
+            'latest_session_trend': latest_session_trend,
         })
+
+    patient_summaries.sort(
+        key=lambda item: (item.get('latest_risk_score', 0.0), item.get('unack_alerts', 0)),
+        reverse=True,
+    )
 
     all_alerts_qs = PressureAlert.objects.filter(acknowledged=False)
     if role == 'clinician':
@@ -175,25 +234,7 @@ def api_session_frames(request, session_id):
     )
 
     for frame in frames_qs:
-        frame_dict = {
-            'id': frame.id,
-            'frame_index': frame.frame_index,
-            'timestamp': frame.timestamp.isoformat(),
-            'data': json.loads(frame.data),
-        }
-        if hasattr(frame, 'metrics'):
-            m = frame.metrics
-            frame_dict['metrics'] = {
-                'ppi': m.peak_pressure_index,
-                'contact_area': m.contact_area_percent,
-                'avg_pressure': m.average_pressure,
-                'asymmetry': m.asymmetry_score,
-                'risk_score': m.risk_score,
-                'risk_level': m.risk_level,
-                'hot_zones': m.get_hot_zones(),
-                'plain_english': m.plain_english,
-            }
-        frames_data.append(frame_dict)
+        frames_data.append(_serialize_frame_payload(frame))
 
     first_frame_index = frames_data[0]['frame_index'] if frames_data else None
     last_frame_index = frames_data[-1]['frame_index'] if frames_data else None
@@ -222,24 +263,7 @@ def api_latest_frame(request, session_id):
     if not frame:
         return JsonResponse({'error': 'No frames'}, status=404)
 
-    data = {
-        'id': frame.id,
-        'frame_index': frame.frame_index,
-        'timestamp': frame.timestamp.isoformat(),
-        'data': json.loads(frame.data),
-    }
-    if hasattr(frame, 'metrics'):
-        m = frame.metrics
-        data['metrics'] = {
-            'ppi': m.peak_pressure_index,
-            'contact_area': m.contact_area_percent,
-            'avg_pressure': m.average_pressure,
-            'asymmetry': m.asymmetry_score,
-            'risk_score': m.risk_score,
-            'risk_level': m.risk_level,
-            'hot_zones': m.get_hot_zones(),
-            'plain_english': m.plain_english,
-        }
+    data = _serialize_frame_payload(frame)
     return JsonResponse(data)
 
 
@@ -254,24 +278,7 @@ def api_frame_detail(request, frame_id):
     if access_error:
         return access_error
 
-    data = {
-        'id': frame.id,
-        'frame_index': frame.frame_index,
-        'timestamp': frame.timestamp.isoformat(),
-        'data': json.loads(frame.data),
-    }
-    if hasattr(frame, 'metrics'):
-        m = frame.metrics
-        data['metrics'] = {
-            'ppi': m.peak_pressure_index,
-            'contact_area': m.contact_area_percent,
-            'avg_pressure': m.average_pressure,
-            'asymmetry': m.asymmetry_score,
-            'risk_score': m.risk_score,
-            'risk_level': m.risk_level,
-            'hot_zones': m.get_hot_zones(),
-            'plain_english': m.plain_english,
-        }
+    data = _serialize_frame_payload(frame)
     return JsonResponse(data)
 
 
@@ -323,6 +330,8 @@ def api_add_comment(request, session_id):
     if timestamp_str:
         try:
             ref_time = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+            if timezone.is_naive(ref_time):
+                ref_time = timezone.make_aware(ref_time, timezone.get_current_timezone())
         except Exception:
             pass
     elif frame:
@@ -345,6 +354,8 @@ def api_add_comment(request, session_id):
         'text': comment.text,
         'timestamp': comment.timestamp_reference.isoformat(),
         'created_at': comment.created_at.isoformat(),
+        'frame_id': comment.frame_id,
+        'frame_index': comment.frame.frame_index if comment.frame else None,
     })
 
 
@@ -369,6 +380,7 @@ def api_session_comments(request, session_id):
             'timestamp': c.timestamp_reference.isoformat(),
             'created_at': c.created_at.isoformat(),
             'frame_id': c.frame_id,
+            'frame_index': c.frame.frame_index if c.frame else None,
             'replies': [{
                 'id': r.id,
                 'author': r.author.get_full_name() or r.author.username,
@@ -408,12 +420,28 @@ def patient_report(request, patient_id=None):
     if not user_can_access_patient(request.user, patient):
         return HttpResponseForbidden('Forbidden')
 
-    sessions = SensorSession.objects.filter(patient=patient).order_by('-session_date')
+    sessions = SensorSession.objects.filter(patient=patient).order_by('-session_date', '-start_time')
+
+    start_date = _parse_iso_date(request.GET.get('start_date'))
+    end_date = _parse_iso_date(request.GET.get('end_date'))
+    if start_date and end_date and start_date > end_date:
+        start_date, end_date = end_date, start_date
+
+    if start_date:
+        sessions = sessions.filter(session_date__gte=start_date)
+    if end_date:
+        sessions = sessions.filter(session_date__lte=end_date)
 
     # Build per-session summaries
     session_summaries = []
-    all_ppis, all_risks, all_areas = [], [], []
+    weighted_sum_ppi = 0.0
+    weighted_sum_risk = 0.0
+    weighted_sum_area = 0.0
+    weighted_sum_movement = 0.0
+    weighted_sum_variability = 0.0
+    total_frames = 0
     total_high_risk = 0
+    trend_counts = {'improving': 0, 'worsening': 0, 'stable': 0}
 
     for session in sessions:
         report_data = generate_session_report_data(session)
@@ -422,18 +450,31 @@ def patient_report(request, patient_id=None):
                 'session': session,
                 'data': report_data,
             })
-            all_ppis.append(report_data.get('avg_ppi', 0))
-            all_risks.append(report_data.get('avg_risk_score', 0))
-            all_areas.append(report_data.get('avg_contact_area', 0))
-            dist = report_data.get('risk_distribution', {})
-            total_high_risk += dist.get('high', 0) + dist.get('critical', 0)
 
-    avg_ppi = round(sum(all_ppis) / len(all_ppis), 1) if all_ppis else 0
-    avg_risk = round(sum(all_risks) / len(all_risks), 1) if all_risks else 0
-    avg_area = round(sum(all_areas) / len(all_areas), 1) if all_areas else 0
+            frame_count = report_data.get('frame_count', 0)
+            total_frames += frame_count
+            weighted_sum_ppi += report_data.get('avg_ppi', 0.0) * frame_count
+            weighted_sum_risk += report_data.get('avg_risk_score', 0.0) * frame_count
+            weighted_sum_area += report_data.get('avg_contact_area', 0.0) * frame_count
+            weighted_sum_movement += report_data.get('avg_movement_index', 0.0) * frame_count
+            weighted_sum_variability += report_data.get('avg_pressure_variability', 0.0) * frame_count
 
-    # Downloadable PDF flag
-    download = request.GET.get('download') == '1'
+            total_high_risk += report_data.get('high_risk_events', 0)
+
+            trend = report_data.get('risk_trend', 'stable')
+            if trend in trend_counts:
+                trend_counts[trend] += 1
+
+    avg_ppi = round(weighted_sum_ppi / total_frames, 1) if total_frames else 0
+    avg_risk = round(weighted_sum_risk / total_frames, 1) if total_frames else 0
+    avg_area = round(weighted_sum_area / total_frames, 1) if total_frames else 0
+    avg_movement = round(weighted_sum_movement / total_frames, 1) if total_frames else 0
+    avg_variability = round(weighted_sum_variability / total_frames, 1) if total_frames else 0
+
+    overall_trend = max(trend_counts, key=trend_counts.get) if session_summaries else 'stable'
+
+    download_mode = (request.GET.get('download') or '').strip().lower()
+    format_mode = (request.GET.get('format') or '').strip().lower()
 
     context = {
         'patient': patient,
@@ -441,14 +482,23 @@ def patient_report(request, patient_id=None):
         'avg_ppi': avg_ppi,
         'avg_risk': avg_risk,
         'avg_area': avg_area,
+        'avg_movement': avg_movement,
+        'avg_variability': avg_variability,
         'total_high_risk': total_high_risk,
         'overall_risk_level': get_risk_level(avg_risk),
+        'overall_trend': overall_trend,
+        'total_frames': total_frames,
+        'total_sessions': len(session_summaries),
+        'start_date': start_date,
+        'end_date': end_date,
         'generated_at': timezone.now(),
-        'download': download,
     }
 
-    if download:
+    if download_mode in {'1', 'pdf', 'true'}:
         return generate_pdf_report(context)
+
+    if download_mode == 'csv' or format_mode == 'csv':
+        return generate_csv_report(context)
 
     return render(request, 'sensore/report.html', context)
 
@@ -521,8 +571,11 @@ def generate_pdf_report(context):
             ['Average Peak Pressure Index', f"{context['avg_ppi']} / 4095"],
             ['Average Contact Area', f"{context['avg_area']}%"],
             ['Average Risk Score', f"{context['avg_risk']} / 100"],
+            ['Average Movement Index', f"{context['avg_movement']} / 100"],
+            ['Average Variability', f"{context['avg_variability']}%"],
             ['Total High/Critical Risk Events', str(context['total_high_risk'])],
             ['Overall Risk Level', rl.upper()],
+            ['Overall Trend', context['overall_trend'].upper()],
         ]
         st = Table(summary_data, colWidths=[10*cm, 6*cm])
         st.setStyle(TableStyle([
@@ -590,6 +643,67 @@ def generate_pdf_report(context):
                             content_type='text/plain', status=500)
 
 
+def generate_csv_report(context):
+    """Generate a structured CSV report for offline records."""
+    patient = context['patient']
+
+    response = HttpResponse(content_type='text/csv')
+    patient_name = (patient.get_full_name() or patient.username).replace(' ', '_')
+    response['Content-Disposition'] = f'attachment; filename="Sensore_Report_{patient_name}.csv"'
+
+    writer = csv.writer(response)
+    writer.writerow(['Sensore Medical History Export'])
+    writer.writerow(['Generated At', context['generated_at'].isoformat()])
+    writer.writerow(['Patient Username', patient.username])
+    writer.writerow(['Patient Name', patient.get_full_name() or patient.username])
+    writer.writerow(['Overall Risk Level', context['overall_risk_level']])
+    writer.writerow(['Overall Trend', context['overall_trend']])
+    writer.writerow(['Average PPI', context['avg_ppi']])
+    writer.writerow(['Average Contact Area (%)', context['avg_area']])
+    writer.writerow(['Average Risk Score', context['avg_risk']])
+    writer.writerow(['Average Movement Index', context['avg_movement']])
+    writer.writerow(['Average Variability (%)', context['avg_variability']])
+    writer.writerow(['Total High/Critical Events', context['total_high_risk']])
+    writer.writerow([])
+
+    writer.writerow([
+        'Session Date',
+        'Start Time',
+        'Frame Count',
+        'Avg PPI',
+        'Avg Contact Area (%)',
+        'Avg Risk Score',
+        'Avg Movement Index',
+        'Avg Variability (%)',
+        'High-Risk Events',
+        'High-Risk Ratio (%)',
+        'Peak Risk Level',
+        'Risk Trend',
+        'Flagged For Review',
+    ])
+
+    for item in context['session_summaries']:
+        session = item['session']
+        data = item['data']
+        writer.writerow([
+            session.session_date,
+            session.start_time.isoformat() if session.start_time else '',
+            data.get('frame_count', 0),
+            data.get('avg_ppi', 0),
+            data.get('avg_contact_area', 0),
+            data.get('avg_risk_score', 0),
+            data.get('avg_movement_index', 0),
+            data.get('avg_pressure_variability', 0),
+            data.get('high_risk_events', 0),
+            data.get('high_risk_ratio', 0),
+            data.get('peak_risk_level', ''),
+            data.get('risk_trend', 'stable'),
+            'yes' if session.flagged_for_review else 'no',
+        ])
+
+    return response
+
+
 @login_required
 @require_GET
 def api_patient_sessions(request, patient_id):
@@ -599,14 +713,21 @@ def api_patient_sessions(request, patient_id):
     if access_error:
         return access_error
 
-    sessions = SensorSession.objects.filter(patient=patient).order_by('-session_date')[:20]
-    data = [{
-        'id': s.id,
-        'date': str(s.session_date),
-        'start_time': s.start_time.isoformat(),
-        'frame_count': s.frame_count,
-        'flagged': s.flagged_for_review,
-    } for s in sessions]
+    sessions = SensorSession.objects.filter(patient=patient).order_by('-session_date', '-start_time')[:20]
+    data = []
+    for s in sessions:
+        summary = generate_session_report_data(s)
+        data.append({
+            'id': s.id,
+            'date': str(s.session_date),
+            'start_time': s.start_time.isoformat(),
+            'frame_count': s.frame_count,
+            'flagged': s.flagged_for_review,
+            'avg_risk_score': summary.get('avg_risk_score', 0),
+            'high_risk_events': summary.get('high_risk_events', 0),
+            'high_risk_ratio': summary.get('high_risk_ratio', 0),
+            'risk_trend': summary.get('risk_trend', 'stable'),
+        })
     return JsonResponse({'sessions': data})
 
 @login_required
