@@ -260,6 +260,28 @@ class Command(BaseCommand):
             PatientProfile.objects.get_or_create(user=patient)
             patients.append(patient)
 
+        # Keep legacy demo credentials available in curated mode.
+        # The login screen references patient1/patient123 for quick testing.
+        patient1, _ = User.objects.get_or_create(
+            username="patient1",
+            defaults={
+                "role": User.ROLE_PATIENT,
+                "first_name": "Demo",
+                "last_name": "Patient One",
+                "email": "patient1@sensore.local",
+            },
+        )
+        patient1.role = User.ROLE_PATIENT
+        patient1.first_name = patient1.first_name or "Demo"
+        patient1.last_name = patient1.last_name or "Patient One"
+        patient1.email = patient1.email or "patient1@sensore.local"
+        patient1.set_password(password)
+        patient1.save()
+        PatientProfile.objects.get_or_create(user=patient1)
+
+        if not any(p.id == patient1.id for p in patients):
+            patients.append(patient1)
+
         return patients
 
     def _purge_generated_users(self, keep_usernames):

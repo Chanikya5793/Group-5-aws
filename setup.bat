@@ -168,7 +168,7 @@ if /I "!SEED_MODE!"=="legacy" (
     echo   Patient: patient_001 / patient123
 ) else if /I "!SEED_MODE!"=="core_curated" (
     echo   Clinician: clinician1 / clinician123
-    echo   Patient: demo_patient_* / patient123
+    echo   Patient: patient1 / patient123
 ) else if /I "!SEED_MODE!"=="core_mass" (
     echo   Clinician: clinician1 / clinician123
     echo   Patient: patient1 / patient123

@@ -139,7 +139,7 @@ if [ "$SEED_MODE" = "legacy" ]; then
   log "  Patient: patient_001 / patient123"
 elif [ "$SEED_MODE" = "core_curated" ]; then
   log "  Clinician: clinician1 / clinician123"
-  log "  Patient: demo_patient_* / patient123"
+  log "  Patient: patient1 / patient123"
 elif [ "$SEED_MODE" = "core_mass" ]; then
   log "  Clinician: clinician1 / clinician123"
   log "  Patient: patient1 / patient123"
